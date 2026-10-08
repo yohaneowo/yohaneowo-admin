@@ -1,0 +1,8 @@
+# 插件元数据（可选），格式同 module_example/plugin.toml
+
+name = "bot"
+title = "Bot管理"
+version = "1.0.0"
+description = "yohaneowo-bot（Discord / LINE）的群组、功能权限与解析日志管理。"
+optional = true
+tags = ["bot", "discord", "line"]
