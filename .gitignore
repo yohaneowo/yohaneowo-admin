@@ -82,3 +82,6 @@ AGENTS.md
 backend/*.sql
 backend/sql/**/*.sql
 *.dump
+
+# Claude Code 本机设置
+.claude/settings.local.json
