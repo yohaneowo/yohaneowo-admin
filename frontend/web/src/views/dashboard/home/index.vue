@@ -15,20 +15,9 @@
                 </ElCol>
               </ElRow>
               <ElRow :gutter="20">
-                <ElCol :xs="24" :sm="8" :md="8" class="mb-5">
-                  <FaStatsCard
-                    :icon="'ri:money-cny-box-line'"
-                    :iconStyle="'bg-theme'"
-                    :boxStyle="'bg-theme/10!'"
-                    :title="'总收入'"
-                    :description="'月收入超过¥350,000+'"
-                    :count="35000"
-                    :textColor="'var(--theme-color)'"
-                    :decimals="0"
-                    :showArrow="false"
-                    separator=","
-                    customIconStyle="'text-theme! text-3xl!''"
-                  />
+                <!-- 总资产来自 yohaneowo-bot 的交易所资产快照，只有被授权的角色看得到 -->
+                <ElCol v-if="canViewPortfolio" :xs="24" :sm="8" :md="8" class="mb-5">
+                  <PortfolioStatsCard />
                 </ElCol>
                 <ElCol :xs="24" :sm="8" :md="8" class="mb-5">
                   <FaProgressCard
@@ -159,7 +148,7 @@
 <script setup lang="ts">
 defineOptions({ name: "Home", inheritAttrs: false });
 
-import { ref, onMounted, onUnmounted, defineAsyncComponent } from "vue";
+import { ref, computed, onMounted, onUnmounted, defineAsyncComponent } from "vue";
 import { ElMessage } from "element-plus";
 import DashboardAPI from "@/api/module_monitor/dashboard";
 import { getDashboardMock, type HealthItem } from "@/mock/dashboard";
@@ -171,6 +160,11 @@ import TodoList from "./modules/todo-list.vue";
 import CardList from "./modules/card-list.vue";
 import AboutProject from "./modules/about-project.vue";
 import QuickLinks from "./modules/quick-links.vue";
+import PortfolioStatsCard from "@/views/module_bot/components/PortfolioStatsCard.vue";
+import { PORTFOLIO_PERM } from "@/api/module_bot/portfolio";
+import { checkPerm } from "@/utils/checkPerm";
+
+const canViewPortfolio = computed(() => checkPerm(PORTFOLIO_PERM));
 
 const mock = getDashboardMock();
 const loading = ref(false);
