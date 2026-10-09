@@ -12,10 +12,17 @@ export const PLATFORM_TAG = {
   line: { type: "success", text: "LINE" },
 } as const;
 
-// 与 bot 端 services/media.js 的 SUPPORTED_SITES 对应
-export const SITE_OPTIONS = ["TikTok", "Facebook", "Instagram", "小红书", "YouTube", "Threads"].map(
-  (site) => ({ label: site, value: site })
-);
+// 与 bot 端 services/media.js 的 SUPPORTED_SITES 对应。bot 新增网站而这里还没加时，
+// SiteFilterBar 也会按日志里出现的网站名自动补上按钮（排在最后）
+export const SITE_OPTIONS = [
+  "TikTok",
+  "Facebook",
+  "Instagram",
+  "小红书",
+  "YouTube",
+  "Threads",
+  "X",
+].map((site) => ({ label: site, value: site }));
 
 // 网站按钮的「全部」（不带 site 参数）与「其他」（只看没有网站的日志，与后端 OTHER_SITE 对应）
 export const ALL_SITES = "";

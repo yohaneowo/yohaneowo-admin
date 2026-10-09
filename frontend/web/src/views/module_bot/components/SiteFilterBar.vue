@@ -2,7 +2,7 @@
 <template>
   <ElRadioGroup v-model="site" class="site-filter-bar">
     <ElRadioButton :value="ALL_SITES">全部 ({{ total }})</ElRadioButton>
-    <ElRadioButton v-for="option in SITE_OPTIONS" :key="option.value" :value="option.value">
+    <ElRadioButton v-for="option in siteOptions" :key="option.value" :value="option.value">
       {{ option.label }} ({{ countOf(option.value) }})
     </ElRadioButton>
     <ElRadioButton v-if="showOther" :value="OTHER_SITE">其他 ({{ countOf(null) }})</ElRadioButton>
@@ -20,6 +20,16 @@ const props = defineProps<{
 }>();
 
 const site = defineModel<string>({ required: true });
+
+// 已知网站 + 日志里出现但还不在列表中的网站
+const siteOptions = computed(() => {
+  const known = new Set(SITE_OPTIONS.map((option) => option.value));
+  const extra = props.counts
+    .map((item) => item.site)
+    .filter((site): site is string => !!site && !known.has(site))
+    .map((site) => ({ label: site, value: site }));
+  return [...SITE_OPTIONS, ...extra];
+});
 
 const total = computed(() => props.counts.reduce((sum, item) => sum + item.count, 0));
 
