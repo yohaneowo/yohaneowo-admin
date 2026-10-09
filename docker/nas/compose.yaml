@@ -1,0 +1,122 @@
+# yohaneowo-admin 在 NAS 上的部署：只拉镜像，不构建（镜像由 docker/nas/publish.sh 在电脑上构建并推送）。
+# 用法：把本文件和 .env（照 .env.example 填）放在 NAS 上同一个文件夹，
+#       docker compose up -d（或在 Container Manager 用本文件建项目）。
+# 打开：http://<NAS 的 IP>:${WEB_PORT}/web
+#
+# 数据：
+# - MySQL / Redis 数据在本文件夹下的 mysql/、redis/，可用 Hyper Backup 备份
+# - 上传的文件在 volume「upload」（后端以非 root 用户运行，写不了 NAS 文件夹）
+#
+# yohaneowo-bot（稳定版 compose.nas.yaml）通过外部网络 yohaneowo-admin 访问
+# http://yohaneowo-admin-web 上报群组、日志与资产。所以要先启动本项目，再启动 bot。
+
+name: yohaneowo-admin
+
+services:
+    mysql:
+        image: mysql:8.0
+        restart: unless-stopped
+        environment:
+            TZ: Asia/Shanghai
+            MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 设置 MYSQL_ROOT_PASSWORD}
+            MYSQL_DATABASE: fastapiadmin
+            MYSQL_USER: fastapiadmin
+            MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请在 .env 设置 MYSQL_PASSWORD}
+        command: ['--character-set-server=utf8mb4', '--collation-server=utf8mb4_unicode_ci']
+        volumes:
+            - ./mysql:/var/lib/mysql
+        healthcheck:
+            test: ['CMD-SHELL', 'mysqladmin ping -h localhost -uroot -p"$$MYSQL_ROOT_PASSWORD"']
+            interval: 10s
+            timeout: 10s
+            retries: 10
+            start_period: 30s
+        logging: &logging
+            driver: json-file
+            options:
+                max-size: 10m
+                max-file: '3'
+
+    redis:
+        image: redis:7-alpine
+        restart: unless-stopped
+        command: ['redis-server', '--requirepass', '${REDIS_PASSWORD:?请在 .env 设置 REDIS_PASSWORD}', '--appendonly', 'yes']
+        volumes:
+            - ./redis:/data
+        healthcheck:
+            test: ['CMD-SHELL', 'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep PONG']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+        environment:
+            REDIS_PASSWORD: ${REDIS_PASSWORD}
+        logging: *logging
+
+    backend:
+        image: yohane0w0/yohaneowo-admin-backend:${IMAGE_TAG:-latest}
+        restart: unless-stopped
+        environment:
+            TZ: Asia/Shanghai
+            ENVIRONMENT: prod
+            DEBUG: 'false'
+            LOGGER_LEVEL: INFO
+            DATABASE_TYPE: mysql
+            DATABASE_HOST: mysql
+            DATABASE_PORT: '3306'
+            DATABASE_USER: fastapiadmin
+            DATABASE_PASSWORD: ${MYSQL_PASSWORD}
+            DATABASE_NAME: fastapiadmin
+            REDIS_HOST: redis
+            REDIS_PORT: '6379'
+            REDIS_PASSWORD: ${REDIS_PASSWORD}
+            REDIS_DB_NAME: '1'
+            SECRET_KEY: ${SECRET_KEY:?请在 .env 设置 SECRET_KEY（openssl rand -hex 32）}
+            BOT_API_TOKEN: ${BOT_API_TOKEN:-}
+            DEMO_ENABLE: 'false'
+            SCHEDULER_ALLOW_CODE_EXEC: 'false'
+            # 只经由同项目的 nginx 访问，见 nginx.conf 的说明：
+            # uvicorn 不信任代理头（scheme 保持 http），真实 IP 由 X-Real-IP 传入
+            FORWARDED_ALLOW_IPS: 127.0.0.1
+            TRUSTED_PROXY_HOPS: '1'
+            # 允许的 Host 头（JSON 数组）。只在家里用时保持 ["*"]；对外开放前改成实际网址
+            ALLOWED_HOSTS: ${ALLOWED_HOSTS:-["*"]}
+        volumes:
+            - upload:/home/static/upload
+        depends_on:
+            mysql:
+                condition: service_healthy
+            redis:
+                condition: service_healthy
+        healthcheck:
+            test:
+                - CMD-SHELL
+                - >-
+                    python -c 'import urllib.request; urllib.request.urlopen(urllib.request.Request("http://localhost:8001/api/v1/monitor/health/check", headers={"X-Forwarded-Proto": "https"}), timeout=5)'
+            interval: 15s
+            timeout: 10s
+            retries: 5
+            start_period: 60s
+        logging: *logging
+
+    web:
+        image: yohane0w0/yohaneowo-admin-web:${IMAGE_TAG:-latest}
+        restart: unless-stopped
+        ports:
+            - '${WEB_PORT:-8090}:80'
+        depends_on:
+            - backend
+        networks:
+            default:
+            bot:
+                # yohaneowo-bot 用这个名字找到 admin
+                aliases:
+                    - yohaneowo-admin-web
+        logging: *logging
+
+volumes:
+    upload:
+
+networks:
+    # 给 yohaneowo-bot 加入的共享网络；bot 的 compose 以 external 方式引用同名网络
+    bot:
+        name: yohaneowo-admin

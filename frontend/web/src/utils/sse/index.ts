@@ -27,6 +27,8 @@ export interface SSEClientOptions {
 
 /** ws(s):// 基址转 http(s)://：SSE 走普通 HTTP，复用同一环境变量配置 */
 export function httpEndpoint(endpoint: string): string {
+  // 未配置时（前后端同源部署，如 NAS 上的 nginx）用当前页面的源
+  if (!endpoint) return window.location.origin;
   return endpoint.replace(/^ws/, "http");
 }
 
