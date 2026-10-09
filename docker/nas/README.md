@@ -50,8 +50,11 @@ docker compose pull && docker compose up -d
 | 位置 | 内容 |
 | --- | --- |
 | `./mysql/` | MySQL 数据：群组、日志、资产记录、账号…… |
-| `./redis/` | Redis 数据（缓存、登录状态；丢了只需重新登录） |
+| volume `yohaneowo-admin_redis` | Redis 数据（缓存、登录状态；丢了只需重新登录） |
 | volume `yohaneowo-admin_upload` | 后台上传的文件 |
+
+Redis 与上传文件用 Docker volume，是因为群晖文件夹的 ACL 权限不让这两个容器写入
+（Redis 会报 `Can't open or create append-only dir appendonlydir: Permission denied`）。
 
 用 Hyper Backup 备份 `./mysql/` 即可。
 

@@ -4,8 +4,9 @@
 # 打开：http://<NAS 的 IP>:${WEB_PORT}/web
 #
 # 数据：
-# - MySQL / Redis 数据在本文件夹下的 mysql/、redis/，可用 Hyper Backup 备份
-# - 上传的文件在 volume「upload」（后端以非 root 用户运行，写不了 NAS 文件夹）
+# - MySQL 数据在本文件夹下的 mysql/，可用 Hyper Backup 备份
+# - Redis（缓存、登录状态）与上传的文件在 volume「redis」「upload」：群晖文件夹的 ACL 权限
+#   不让这两个容器里的非 root 用户写入（Redis 会报 appendonlydir: Permission denied）
 #
 # yohaneowo-bot（稳定版 compose.nas.yaml）通过外部网络 yohaneowo-admin 访问
 # http://yohaneowo-admin-web 上报群组、日志与资产。所以要先启动本项目，再启动 bot。
@@ -42,7 +43,7 @@ services:
         restart: unless-stopped
         command: ['redis-server', '--requirepass', '${REDIS_PASSWORD:?请在 .env 设置 REDIS_PASSWORD}', '--appendonly', 'yes']
         volumes:
-            - ./redis:/data
+            - redis:/data
         healthcheck:
             test: ['CMD-SHELL', 'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep PONG']
             interval: 10s
@@ -114,6 +115,7 @@ services:
         logging: *logging
 
 volumes:
+    redis:
     upload:
 
 networks:
