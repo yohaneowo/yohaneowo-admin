@@ -1,0 +1,2 @@
+# 在 Windows（autocrlf=true）检出时，bash 脚本仍保持 LF，否则行尾的 CR 会让脚本无法执行
+*.sh text eol=lf
