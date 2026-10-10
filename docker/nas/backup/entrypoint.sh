@@ -5,7 +5,7 @@ set -euo pipefail
 BACKUP_TIME="${BACKUP_TIME:-04:00}"
 
 echo "等待 MySQL 就绪…"
-until MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqladmin -h mysql -u root ping --silent 2>/dev/null; do
+until MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqladmin -h mysql -u root ping --silent >/dev/null 2>&1; do
 	sleep 5
 done
 
