@@ -1,3 +1,6 @@
 dist/
 # 真实密钥，只放在 NAS 上
 .env
+# 本机测试时产生的备份
+backup/*.sql.gz
+backup/.*.partial

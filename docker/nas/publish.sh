@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# 构建并推送 NAS 用的两个镜像（在电脑上用 Git Bash 执行）：
+# 构建并推送 NAS 用的三个镜像（在电脑上用 Git Bash 执行）：
 #   yohane0w0/yohaneowo-admin-backend:{latest,<git 版本>}
 #   yohane0w0/yohaneowo-admin-web:{latest,<git 版本>}
+#   yohane0w0/yohaneowo-admin-backup:{latest,<git 版本>}   数据库备份服务
 #
 # 用法：docker/nas/publish.sh [git 引用，默认 master]
 #
@@ -54,13 +55,19 @@ docker build -f "$NAS_DIR/web.Dockerfile" \
 	-t "$REGISTRY/yohaneowo-admin-web:$VERSION" \
 	"$NAS_DIR"
 
+echo "==> 构建备份镜像"
+docker build -f "$WORKTREE/docker/nas/backup/Dockerfile" \
+	-t "$REGISTRY/yohaneowo-admin-backup:latest" \
+	-t "$REGISTRY/yohaneowo-admin-backup:$VERSION" \
+	"$WORKTREE/docker/nas/backup"
+
 if [[ "${NO_PUSH:-}" == "1" ]]; then
 	echo "==> NO_PUSH=1，只构建不推送"
 	exit 0
 fi
 
 echo "==> 推送"
-for image in yohaneowo-admin-backend yohaneowo-admin-web; do
+for image in yohaneowo-admin-backend yohaneowo-admin-web yohaneowo-admin-backup; do
 	docker push "$REGISTRY/$image:latest"
 	docker push "$REGISTRY/$image:$VERSION"
 done
