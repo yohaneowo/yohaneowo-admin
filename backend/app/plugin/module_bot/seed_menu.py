@@ -1,4 +1,4 @@
-"""把 sql/sys_menu.json 里的「Bot管理」菜单补进已初始化过的数据库。
+"""把 sql/sys_menu.json 里本项目自己加的菜单（Bot管理、项目依赖）补进已初始化过的数据库。
 
 种子数据只在 sys_menu 为空时导入，已有数据的库（本机开发库、已部署的 NAS）不会自动拿到新菜单，
 故用此脚本按 route_name 补齐缺少的节点；已存在的节点不改动，可重复执行。
@@ -11,7 +11,7 @@ import asyncio
 import json
 import os
 
-ROOT_ROUTE_NAME = "Bot"
+ROOT_ROUTE_NAMES = ("Bot", "Project")
 
 
 async def main() -> None:
@@ -26,7 +26,7 @@ async def main() -> None:
     ImportUtil.find_models(MappedBase)  # 加载全部模型，关联关系（created_by 等）才能解析
 
     menus = json.loads((SCRIPT_DIR / "sys_menu.json").read_text(encoding="utf-8"))
-    root = next(m for m in menus if m.get("route_name") == ROOT_ROUTE_NAME)
+    roots = [m for m in menus if m.get("route_name") in ROOT_ROUTE_NAMES]
 
     async with async_db_session() as db, db.begin():
 
@@ -46,7 +46,8 @@ async def main() -> None:
             for child in node.get("children", []):
                 await ensure(child, obj.id)
 
-        await ensure(root, None)
+        for root in roots:
+            await ensure(root, None)
 
     await async_engine.dispose()
 

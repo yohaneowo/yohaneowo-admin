@@ -1,0 +1,57 @@
+{
+	"$comment": "yohaneowo-admin 自己的依赖里，不能从 pyproject.toml / package.json 读到的部分（镜像、上游框架），以及重点依赖的名单。见 self_report.py",
+	"critical": [
+		"fastapi",
+		"sqlalchemy",
+		"pydantic",
+		"uvicorn",
+		"alembic",
+		"vue",
+		"element-plus",
+		"vue-router",
+		"pinia",
+		"axios"
+	],
+	"external": [
+		{
+			"name": "FastapiAdmin（上游框架）",
+			"category": "上游框架",
+			"kind": "github",
+			"source": "fastapiadmin/FastapiAdmin",
+			"usage": "本项目 fork 的来源；有新版本时考虑合并进来",
+			"installed_version_from": "pyproject",
+			"critical": true
+		},
+		{
+			"name": "python:3.12-slim",
+			"category": "Docker 镜像",
+			"kind": "docker",
+			"source": "python:3.12-slim",
+			"usage": "后端镜像的基础（docker/backend/Dockerfile）",
+			"critical": true
+		},
+		{
+			"name": "nginx:1.25-alpine",
+			"category": "Docker 镜像",
+			"kind": "docker",
+			"source": "nginx:1.25-alpine",
+			"usage": "前端镜像的基础（docker/nas/web.Dockerfile）",
+			"critical": true
+		},
+		{
+			"name": "mysql:8.0",
+			"category": "Docker 镜像",
+			"kind": "docker",
+			"source": "mysql:8.0",
+			"usage": "数据库，也是备份服务镜像的基础",
+			"critical": true
+		},
+		{
+			"name": "redis:7-alpine",
+			"category": "Docker 镜像",
+			"kind": "docker",
+			"source": "redis:7-alpine",
+			"usage": "缓存与登录状态"
+		}
+	]
+}

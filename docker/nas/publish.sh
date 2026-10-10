@@ -43,6 +43,11 @@ EOF
 rm -rf "$NAS_DIR/dist"
 cp -r "$WORKTREE/frontend/web/dist" "$NAS_DIR/dist"
 
+# 「项目依赖」页要列出前端的依赖与锁定版本，但后端镜像里没有前端源码：复制这两个文件进去
+# （app/plugin/module_project/dependency/self_report.py 读 /home/frontend-manifest/）
+mkdir -p "$WORKTREE/backend/frontend-manifest"
+cp "$WORKTREE/frontend/web/package.json" "$WORKTREE/frontend/web/pnpm-lock.yaml" "$WORKTREE/backend/frontend-manifest/"
+
 echo "==> 构建后端镜像"
 docker build -f "$WORKTREE/docker/backend/Dockerfile" \
 	-t "$REGISTRY/yohaneowo-admin-backend:latest" \

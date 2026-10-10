@@ -46,6 +46,15 @@ docker compose pull && docker compose up -d
 
 数据库结构有变化时，后端启动时会自动执行迁移。更新前建议先手动备份一次（见下）。
 
+新版本加了菜单时（例如「项目依赖」），已经初始化过的数据库不会自动出现新菜单，更新后执行一次：
+
+```bash
+sudo docker compose exec backend python -m app.plugin.module_bot.seed_menu --env=prod
+```
+
+它只补缺少的菜单，已有的不会改动，重复执行也没关系。超级管理员（super、admin）马上看得到；
+其他角色要在「系统管理 → 角色管理 → 分配权限」勾选。
+
 ## 数据与备份
 
 | 位置 | 内容 |

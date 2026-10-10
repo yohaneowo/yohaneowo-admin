@@ -1,0 +1,8 @@
+# 插件元数据（可选），格式同 module_example/plugin.toml
+
+name = "project"
+title = "项目依赖"
+version = "1.0.0"
+description = "各项目（如 yohaneowo-bot）用到的外部依赖：上游是否还在维护、实际版本是否落后。"
+optional = true
+tags = ["project", "dependency"]
