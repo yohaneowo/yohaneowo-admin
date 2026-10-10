@@ -125,7 +125,7 @@ services:
         image: yohane0w0/yohaneowo-admin-web:${IMAGE_TAG:-latest}
         restart: unless-stopped
         ports:
-            - '${WEB_PORT:-8090}:80'
+            - '${WEB_PORT:-18090}:80'
         depends_on:
             - backend
         networks:

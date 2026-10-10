@@ -23,7 +23,7 @@ docker/nas/publish.sh   # 默认构建 master，也可指定：docker/nas/publis
 1. 在 NAS 上建一个文件夹，例如 `/volume1/docker/yohaneowo-admin`。
 2. 把 `compose.yaml` 放进去，再照 `.env.example` 建一个 `.env`，所有密码和密钥都要填，用随机值。
 3. 在该文件夹执行 `docker compose up -d`，或在 Container Manager 里用 `compose.yaml` 建项目。
-4. 打开 `http://<NAS 的 IP>:8090/web`（端口是 `.env` 的 `WEB_PORT`）。
+4. 打开 `http://<NAS 的 IP>:18090/web`（端口是 `.env` 的 `WEB_PORT`）。
 5. **立刻改掉默认密码**：`super`、`admin`、`user` 三个账号的初始密码都是 `123456`。
    用不到的账号建议直接停用。
 
