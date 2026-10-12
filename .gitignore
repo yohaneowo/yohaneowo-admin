@@ -69,7 +69,8 @@ frontend/web/.env.production
 !frontend/app/.gitkeep
 
 .plan
-CLAUDE.md
+# CLAUDE.md is committed (project notes for Claude Code); personal notes go in CLAUDE.local.md
+CLAUDE.local.md
 AGENTS.md
 .codebuddy
 .agent
