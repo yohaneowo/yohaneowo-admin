@@ -9,7 +9,7 @@ from app.core.base_schema import AuthSchema, PageResultSchema, PaginationQueryPa
 from app.core.dependencies import AuthPermission, db_getter
 
 from ..internal_auth import verify_bot_token
-from .schema import BotVoiceSessionBatchSchema, BotVoiceSessionOutSchema, BotVoiceSessionQueryParam, BotVoiceUserStatSchema
+from .schema import BotVoiceSessionBatchSchema, BotVoiceSessionOutSchema, BotVoiceSessionQueryParam, BotVoiceUserStatQueryParam, BotVoiceUserStatSchema
 from .service import BotVoiceSessionService
 
 # 只读查询，不挂 OperationLogRoute（同解析日志：页面会自动刷新）
@@ -46,10 +46,9 @@ async def get_voice_session_list_controller(
 async def get_voice_session_user_stats_controller(
     auth: Annotated[AuthSchema, Security(AuthPermission(["module_bot:voice_session:query"]))],
     db: Annotated[AsyncSession, Depends(db_getter)],
-    search: Annotated[BotVoiceSessionQueryParam, Query()],
-    limit: Annotated[int, Query(description="前几名", ge=1, le=50)] = 10,
+    search: Annotated[BotVoiceUserStatQueryParam, Query()],
 ) -> JSONResponse:
-    result = await BotVoiceSessionService(auth, db).user_stats(search=search, limit=limit)
+    result = await BotVoiceSessionService(auth, db).user_stats(search=search.filters(), limit=search.limit)
     return SuccessResponse(data=result, msg="查询语音时长排行成功")
 
 

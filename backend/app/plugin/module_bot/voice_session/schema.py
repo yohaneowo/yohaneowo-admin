@@ -42,6 +42,16 @@ class BotVoiceSessionQueryParam(BaseModel):
     joined_time: list[DateTimeStr] | None = Field(None, description="进入时间范围")
 
 
+class BotVoiceUserStatQueryParam(BotVoiceSessionQueryParam):
+    """语音时长排行的查询参数。limit 必须跟筛选条件放在同一个模型里：
+    FastAPI 的查询参数模型旁边若还有其他查询参数，模型就不会被展开（会变成「缺少 search」）"""
+
+    limit: int = Field(10, ge=1, le=50, description="前几名")
+
+    def filters(self) -> BotVoiceSessionQueryParam:
+        return BotVoiceSessionQueryParam(**self.model_dump(exclude={"limit"}))
+
+
 class BotVoiceUserStatSchema(BaseModel):
     """语音时长排行的一行"""
 
