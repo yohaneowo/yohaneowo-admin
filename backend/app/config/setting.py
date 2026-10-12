@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     SERVER_PORT: int = 8001  # 服务端口
     WORKERS: int = 1  # uvicorn worker 进程数（prod 环境可调大；>1 时确保 Redis 共享 jobstore 不重复调度）
     TRUSTED_PROXY_HOPS: int = 1  # 前置可信反向代理跳数（docker 部署默认单层 nginx；直连公网部署填 0）
+    DISPLAY_TIMEZONE: str = "Asia/Taipei"  # 显示时区：数据库存 UTC，API 输出与前端送来的时间按这个时区换算（app/core/timezone.py）
 
     # ================================================= #
     # ******************* API文档配置 ****************** #

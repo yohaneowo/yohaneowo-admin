@@ -2,21 +2,35 @@ import re
 from datetime import date, datetime, time
 from typing import Annotated, Any
 
-from pydantic import AfterValidator, PlainSerializer, WithJsonSchema
+from pydantic import AfterValidator, BeforeValidator, PlainSerializer, WithJsonSchema
 
 from app.common.constant import DATE_DISPLAY_FMT, DATETIME_DISPLAY_FMT, TIME_DISPLAY_FMT
 from app.common.enums import RET
 from app.config.setting import settings
 from app.core.exceptions import CustomException
 from app.core.logger import logger
+from app.core.timezone import from_display, to_display
 from app.utils.password_util import PwdUtil
 
-# 自定义日期时间字符串类型
+
+def _display_string_to_utc(value: Any) -> Any:
+    """前端送来的时间字串是显示时区的本地时间，换成 UTC 再进入后续验证（数据库存 UTC）。
+    数据库读出的 datetime 不是字串，原样通过。须在 pydantic 解析之前做，解析后就分不出来源了。"""
+    if isinstance(value, str) and value.strip():
+        try:
+            return from_display(datetime.strptime(value.strip(), DATETIME_DISPLAY_FMT))
+        except ValueError:
+            return value  # 其他格式交给 pydantic 与 datetime_validator 处理 / 报错
+    return value
+
+
+# 自定义日期时间字符串类型。输出为显示时区的本地时间（app/core/timezone.py）
 DateTimeStr = Annotated[
     datetime,
+    BeforeValidator(_display_string_to_utc),
     AfterValidator(lambda x: datetime_validator(x)),
     PlainSerializer(
-        lambda x: x.strftime(DATETIME_DISPLAY_FMT) if isinstance(x, datetime) else str(x),
+        lambda x: to_display(x).strftime(DATETIME_DISPLAY_FMT) if isinstance(x, datetime) else str(x),
         return_type=str,
         when_used="json",
     ),

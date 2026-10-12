@@ -1,8 +1,8 @@
-from datetime import datetime
 
 from pydantic import BaseModel, Field
 
 from app.core.base_schema import SessionInfoSchema
+from app.core.validator import DateTimeStr
 
 
 class OnlineOutSchema(SessionInfoSchema):
@@ -21,7 +21,7 @@ class RecentLoginItem(BaseModel):
     """最近登录记录"""
     username: str
     status: int
-    login_time: datetime
+    login_time: DateTimeStr
     login_ip: str | None = None
     login_location: str | None = None
 

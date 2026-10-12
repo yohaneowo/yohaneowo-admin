@@ -36,7 +36,8 @@ export const LEVEL_TAG = {
 export function timeAgo(value?: string | null) {
   if (!value) return "—";
   const days = Math.floor(
-    (Date.now() - new Date(`${value.replace(" ", "T")}Z`).getTime()) / 86400000
+    // 后端送来的是显示时区的本地时间（backend app/core/timezone.py），按本地时间解析
+    (Date.now() - new Date(value.replace(" ", "T")).getTime()) / 86400000
   );
   if (days < 1) return "今天";
   if (days < 30) return `${days} 天前`;

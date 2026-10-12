@@ -1,5 +1,5 @@
 import json
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 from redis.asyncio.client import Redis
 from sqlalchemy import func, select
@@ -9,6 +9,7 @@ from app.common.enums import RedisInitKeyConfig
 from app.core.logger import logger
 from app.core.redis_crud import RedisCURD
 from app.core.security import decode_access_token
+from app.core.timezone import local_date, local_today_start_utc, to_display
 from app.modules.system.log.model import LoginLogModel
 from app.modules.system.user.model import UserModel
 
@@ -88,7 +89,8 @@ class OnlineService:
     @staticmethod
     async def get_dashboard_stats(db: AsyncSession, redis: Redis) -> DashboardStatsSchema:
         """获取仪表盘统计数据"""
-        today_start = datetime.combine(date.today(), datetime.min.time())
+        # 「今天」按显示时区算，再换成 UTC 跟数据库的时间比较（原本用服务器所在地的日期，NAS 容器与电脑结果不同）
+        today_start = local_today_start_utc()
         week_start = today_start - timedelta(days=7)
 
         online_count = len(await OnlineService.get_online_list(redis))
@@ -158,7 +160,7 @@ class OnlineService:
         # 查询 7 天内每天登录次数与独立用户数
         login_sql = (
             select(
-                func.date(LoginLogModel.created_time).label("day"),
+                local_date(LoginLogModel.created_time).label("day"),
                 func.count().label("logins"),
                 func.count(func.distinct(LoginLogModel.username)).label("unique_users"),
             )
@@ -167,7 +169,7 @@ class OnlineService:
                 LoginLogModel.status == 1,  # 仅统计成功登录
                 LoginLogModel.created_time >= week_start,
             )
-            .group_by(func.date(LoginLogModel.created_time))
+            .group_by(local_date(LoginLogModel.created_time))
         )
         login_rows = (await db.execute(login_sql)).all()
         login_map = {str(r.day): (r.logins, r.unique_users) for r in login_rows}
@@ -175,14 +177,14 @@ class OnlineService:
         # 查询 7 天内每天新增用户数
         new_user_sql = (
             select(
-                func.date(UserModel.created_time).label("day"),
+                local_date(UserModel.created_time).label("day"),
                 func.count().label("new_users"),
             )
             .where(
                 UserModel.is_deleted.is_(False),
                 UserModel.created_time >= week_start,
             )
-            .group_by(func.date(UserModel.created_time))
+            .group_by(local_date(UserModel.created_time))
         )
         new_rows = (await db.execute(new_user_sql)).all()
         new_map = {str(r.day): r.new_users for r in new_rows}
@@ -190,7 +192,7 @@ class OnlineService:
         # 生成连续 7 天日期序列（升序），缺口补 0
         trend: list[LoginTrendItem] = []
         for offset in range(7):
-            d = week_start.date() + timedelta(days=offset)
+            d = to_display(week_start).date() + timedelta(days=offset)
             day_str = d.isoformat()
             logins, unique_users = login_map.get(day_str, (0, 0))
             trend.append(

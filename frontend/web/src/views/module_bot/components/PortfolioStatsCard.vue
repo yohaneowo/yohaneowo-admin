@@ -59,7 +59,8 @@ const failures = computed(() => latest.value?.failures ?? []);
 const updatedAgo = computed(() => {
   if (!latest.value?.occurred_time) return "";
   // 后端时间按 UTC 存、不带时区，补上 Z 再解析
-  const at = new Date(`${latest.value.occurred_time.replace(" ", "T")}Z`).getTime();
+  // 后端送来的是显示时区的本地时间（backend app/core/timezone.py），按本地时间解析
+  const at = new Date(latest.value.occurred_time.replace(" ", "T")).getTime();
   const minutes = Math.max(0, Math.round((now.value - at) / 60000));
   if (minutes < 1) return "刚刚更新";
   if (minutes < 60) return `${minutes} 分钟前`;

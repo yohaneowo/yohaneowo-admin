@@ -1,9 +1,9 @@
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.core.base_schema import BaseQueryParam, BaseSchema
+from app.core.validator import DateTimeStr
 
 TransferStatus = Literal["pending", "running", "success", "failed", "canceled"]
 TransferTaskType = Literal["parallel", "chain"]
@@ -94,8 +94,8 @@ class TransferStepOutSchema(BaseSchema):
     total_size: int = Field(default=0, description="本步总字节")
     transferred_size: int = Field(default=0, description="本步已传输字节")
     error_msg: str | None = Field(default=None, description="错误信息")
-    started_at: datetime | None = Field(default=None, description="开始时间")
-    finished_at: datetime | None = Field(default=None, description="结束时间")
+    started_at: DateTimeStr | None = Field(default=None, description="开始时间")
+    finished_at: DateTimeStr | None = Field(default=None, description="结束时间")
 
 
 class TransferTaskCreateResultSchema(BaseModel):
@@ -122,8 +122,8 @@ class TransferTaskOutSchema(BaseSchema):
     progress: int = Field(default=0, description="进度(0-100)")
     speed: float = Field(default=0.0, description="实时速度(B/s)")
     error_msg: str | None = Field(default=None, description="错误信息")
-    started_at: datetime | None = Field(default=None, description="开始时间")
-    finished_at: datetime | None = Field(default=None, description="结束时间")
+    started_at: DateTimeStr | None = Field(default=None, description="开始时间")
+    finished_at: DateTimeStr | None = Field(default=None, description="结束时间")
     steps: list[TransferStepOutSchema] = Field(default_factory=list, description="传输步骤")
 
 
