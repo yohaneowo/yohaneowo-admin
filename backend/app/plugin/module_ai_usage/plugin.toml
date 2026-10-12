@@ -1,0 +1,8 @@
+# 插件元数据（可选），格式同 module_example/plugin.toml
+
+name = "ai_usage"
+title = "AI调用日志"
+version = "1.0.0"
+description = "各项目（如 yohaneowo-bot）调用 AI 的记录：谁调用、哪个功能、用了多少 token 与费用；模型单价每天从 LiteLLM 公开价格表同步。"
+optional = true
+tags = ["ai", "usage", "cost"]

@@ -95,6 +95,10 @@ services:
             REDIS_DB_NAME: '1'
             SECRET_KEY: ${SECRET_KEY:?请在 .env 设置 SECRET_KEY（openssl rand -hex 32）}
             BOT_API_TOKEN: ${BOT_API_TOKEN:-}
+            # AI管理 → 费用对账用的 Anthropic Admin API key；留空 = 不对账
+            ANTHROPIC_ADMIN_API_KEY: ${ANTHROPIC_ADMIN_API_KEY:-}
+            # 页面显示时间用的时区（数据库存 UTC）
+            DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Asia/Taipei}
             DEMO_ENABLE: 'false'
             SCHEDULER_ALLOW_CODE_EXEC: 'false'
             # 只经由同项目的 nginx 访问，见 nginx.conf 的说明：
