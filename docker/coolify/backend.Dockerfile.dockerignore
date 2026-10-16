@@ -1,0 +1,35 @@
+# Ignore rules for docker/coolify/backend.Dockerfile (same as the root .dockerignore, but the
+# frontend manifest files are needed, so only the frontend's build output is left out).
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+venv
+.venv
+.env
+**/.env
+**/.env.*
+!**/.env.example
+.vscode
+.idea
+.git
+.gitignore
+.gitattributes
+logs
+*.log
+*.db
+*.sqlite3
+frontend/web/node_modules
+frontend/web/dist
+frontend/app
+frontend/docs
+docker
+deploy.sh
+deploy.bat
+README.md
+README.en.md
+LICENSE
+backend/static/upload
