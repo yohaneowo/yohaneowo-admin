@@ -7,7 +7,10 @@ fork 自 [FastapiAdmin](https://github.com/fastapiadmin/FastapiAdmin)（远端 `
 | 位置 | 内容 |
 |---|---|
 | `backend/app/plugin/module_bot/` | Bot管理：群组列表、解析日志、运行日志、资产记录、语音记录；`internal_auth.py`（bot 的 token 验证）、`log_common.py`、`seed_menu.py` |
-| `backend/app/plugin/module_ai_usage/` | AI 调用日志、费用排行、模型价格、费用对账（菜单挂在框架自带的「AI管理」底下）。任何项目都能上报（第一版共用 `BOT_API_TOKEN`）；单价每天从 LiteLLM 公开价格表同步（`pricing.py`），手动改过的会锁定；对账用 `ANTHROPIC_ADMIN_API_KEY` 拿 Anthropic 实际帐单比对（`anthropic_admin.py`）。NAS 的 compose 只传明确列出的环境变量，新增设定要记得加进 `docker/nas/compose.yaml` |
+| `backend/app/plugin/module_ai_usage/` | AI 调用日志、费用排行、模型价格、费用对账（菜单挂在框架自带的「AI管理」底下）。任何项目都能上报（第一版共用 `BOT_API_TOKEN`）；单价每天从 LiteLLM 公开价格表同步（`pricing.py`），手动改过的会锁定；对账用 `ANTHROPIC_ADMIN_API_KEY` 拿 Anthropic 实际帐单比对（`anthropic_admin.py`）。`gateway/` 是 AI 转发：bot 把 Claude / Voyage 的请求体交给 `/internal/ai/messages`、`/internal/ai/embeddings`，admin 用 `ANTHROPIC_API_KEY`、`VOYAGE_API_KEY` 调用并直接写调用日志（bot 不再持有这两个 key）。NAS 的 compose 只传明确列出的环境变量，新增设定要记得加进 `docker/nas/compose.yaml` |
+| `backend/app/plugin/module_external/` | 第三方接口（菜单挂在框架的「接口管理」底下）：TMDB、Trakt、OMDb、Wikipedia 每天的请求 / 命中快取 / 失败，以及每日上限、重置时区（页面上改，不写死）。外部请求都先 `service.remaining()` 再 `service.record()`；对方拒绝（额度用完）时 `service.block()` 当天停止 |
+| `backend/app/plugin/module_bot/movie/sync/` | 观影统计同步（从 bot 的 JS 移植，栏位与顺序跟原版一致）：Trakt 纪录 → 口味 → 网站 snapshot + bot 用的 `taste`。电影路由的依赖 `job.ensure_loop` 在第一次被调用时启动背景循环；多个 uvicorn worker 各跑一个循环，靠领取锁定不会重复同步。外部调用每次开短交易，别把整个同步包在一个交易里（会锁住用量表） |
+| `backend/app/plugin/module_bot/movie/sources/` | 外部来源客户端（tmdb / trakt / omdb / wikipedia），key 在 Doppler。bot 经 `/internal/movies/sources/*` 代查，路径有白名单 |
 | `backend/app/plugin/module_project/` | 项目依赖：各项目上报的依赖清单，检查上游维护状态、版本、已知漏洞 |
 | `frontend/web/src/api/module_bot/`、`src/views/module_bot/` | 对应的前端 API 与页面（`shared.ts` 放共用的选项和 hook） |
 | `docker/nas/` | NAS 部署：镜像发布脚本、compose、备份服务 |
@@ -15,7 +18,7 @@ fork 自 [FastapiAdmin](https://github.com/fastapiadmin/FastapiAdmin)（远端 `
 ## 工作约定
 
 - 用中文回复。commit 讯息照现有格式：`feat(bot): …`、`fix(deploy): …`，中文摘要，结尾加 `Co-Authored-By`。只有被要求时才 commit / push。
-- `backend/env/.env.*` 有密码和 `BOT_API_TOKEN`：不要印出内容、不要 commit。
+- 密钥在 Doppler（项目 `yohaneowo-admin`：`dev` = 本机，`prd` = NAS），不再用 `backend/env/.env.*`。不要印出值（`doppler secrets` 会印出，用 `--only-names`）。新电脑先 `doppler login`，再在本 repo 根目录 `doppler setup`。NAS 上 MySQL / Redis 密码仍在 `docker/nas/.env`（官方镜像读不到 Doppler）。Git Bash 里执行 `doppler` 要加 `env -u PWD`（它会读 Unix 格式的 `PWD`，找不到登录状态）。
 - 后端改完跑 `uv run ruff check` 和 `uv run ruff format`（以现有文件的格式为准）。前端改完跑 `npx eslint`、`npx prettier --write`（只针对改过的文件）和 `npx vue-tsc --noEmit`。
 
 ## 时间与时区
@@ -29,7 +32,7 @@ fork 自 [FastapiAdmin](https://github.com/fastapiadmin/FastapiAdmin)（远端 `
 ## 本机开发
 
 - MySQL、Redis 在 Docker：`yohaneowo-admin-mysql`（`127.0.0.1:13306`，库名 `fastapiadmin`）、`yohaneowo-admin-redis`（`127.0.0.1:6379`）。
-- 后端：`cd backend && uv run main.py run --env=dev`（端口 8001，dev 会自动 reload）。用户通常已经开着一个；**不要关掉它**，需要测新路由时另开一个临时实例在别的端口（`uv run uvicorn app:create_app --factory --port 8011`），测完关掉。
+- 后端：`cd backend && doppler run -p yohaneowo-admin -c dev -- uv run --extra mysql main.py run --env=dev`（端口 8001，dev 会自动 reload）。其他要读设定的指令（`main.py revision/upgrade`、`seed_menu`）也要加 `doppler run -p yohaneowo-admin -c dev --`。路径要写对大小写：Doppler 比对 `doppler setup` 绑定的目录时区分大小写，所以指令都明确写 `-p` / `-c`。用户通常已经开着一个；**不要关掉它**，需要测新路由时另开一个临时实例在别的端口（`uv run uvicorn app:create_app --factory --port 8011`），测完关掉。
 - 前端：`cd frontend/web && pnpm dev`。
 - 在 Windows 终端执行会输出中文的指令，前面加 `PYTHONIOENCODING=utf-8`，不然会因 cp950 编码报错。
 

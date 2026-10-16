@@ -1,6 +1,10 @@
 # yohaneowo-admin 在 NAS 上的部署：只拉镜像，不构建（镜像由 docker/nas/publish.sh 在电脑上构建并推送）。
 # 用法：把本文件和 .env（照 .env.example 填）放在 NAS 上同一个文件夹，
 #       docker compose up -d（或在 Container Manager 用本文件建项目）。
+# 密钥分两处：
+# - 应用自己的密钥与第三方 key（SECRET_KEY、BOT_API_TOKEN、OMDB_API_KEY…）在 Doppler 的 yohaneowo-admin / prd，
+#   backend 容器启动时用 DOPPLER_TOKEN 去拿；在 Doppler 改了值要重启 backend
+# - MySQL / Redis 密码留在 .env：mysql、redis、backup 是官方镜像，读不到 Doppler
 # 打开：http://<NAS 的 IP>:${WEB_PORT}/web
 #
 # 数据：
@@ -93,10 +97,8 @@ services:
             REDIS_PORT: '6379'
             REDIS_PASSWORD: ${REDIS_PASSWORD}
             REDIS_DB_NAME: '1'
-            SECRET_KEY: ${SECRET_KEY:?请在 .env 设置 SECRET_KEY（openssl rand -hex 32）}
-            BOT_API_TOKEN: ${BOT_API_TOKEN:-}
-            # AI管理 → 费用对账用的 Anthropic Admin API key；留空 = 不对账
-            ANTHROPIC_ADMIN_API_KEY: ${ANTHROPIC_ADMIN_API_KEY:-}
+            # SECRET_KEY、BOT_API_TOKEN、OMDB_API_KEY、ANTHROPIC_ADMIN_API_KEY 等由 Doppler 注入
+            DOPPLER_TOKEN: ${DOPPLER_TOKEN:?请在 .env 设置 DOPPLER_TOKEN（Doppler yohaneowo-admin / prd 的 service token）}
             # 页面显示时间用的时区（数据库存 UTC）
             DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Asia/Taipei}
             DEMO_ENABLE: 'false'

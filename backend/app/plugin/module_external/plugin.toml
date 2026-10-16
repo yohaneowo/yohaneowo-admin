@@ -1,0 +1,8 @@
+# 插件元数据（可选），格式同 module_example/plugin.toml
+
+name = "external"
+title = "第三方接口"
+version = "1.0.0"
+description = "TMDB、Trakt、OMDb、Wikipedia 等第三方服务的每日用量与额度（挂在「接口管理」底下）。"
+optional = true
+tags = ["external", "usage", "quota"]

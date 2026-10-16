@@ -1,0 +1,6 @@
+# Secrets live in Doppler, not in backend/env/.env.*: config dev = this PC, prd = the NAS.
+# One-time per machine: `doppler login`, then `doppler setup` in this folder (reads this file).
+# Start the backend with `doppler run -p yohaneowo-admin -c dev -- uv run --extra mysql main.py run --env=dev` (from backend/).
+setup:
+  project: yohaneowo-admin
+  config: dev

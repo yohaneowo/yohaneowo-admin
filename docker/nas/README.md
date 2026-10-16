@@ -21,7 +21,7 @@ docker/nas/publish.sh   # 默认构建 master，也可指定：docker/nas/publis
 ## 第一次部署（NAS 上）
 
 1. 在 NAS 上建一个文件夹，例如 `/volume1/docker/yohaneowo-admin`。
-2. 把 `compose.yaml` 放进去，再照 `.env.example` 建一个 `.env`，所有密码和密钥都要填，用随机值。
+2. 把 `compose.yaml` 放进去，再照 `.env.example` 建一个 `.env`：MySQL / Redis 密码用随机值，`DOPPLER_TOKEN` 填 Doppler `yohaneowo-admin` / `prd` 的 service token。`SECRET_KEY`、`BOT_API_TOKEN` 等应用密钥放在 Doppler 的 `prd` 配置。
 3. 在该文件夹执行 `docker compose up -d`，或在 Container Manager 里用 `compose.yaml` 建项目。
 4. 打开 `http://<NAS 的 IP>:18090/web`（端口是 `.env` 的 `WEB_PORT`）。
 5. **立刻改掉默认密码**：`super`、`admin`、`user` 三个账号的初始密码都是 `123456`。
@@ -34,7 +34,7 @@ docker/nas/publish.sh   # 默认构建 master，也可指定：docker/nas/publis
 admin 会建立一个名为 `yohaneowo-admin` 的 Docker 网络。bot 的 `compose.nas.yaml` 加入这个网络后，
 就能通过 `http://yohaneowo-admin-web` 上报，不需要对外开端口。
 
-- bot 的 `.env` 加上 `ADMIN_API_TOKEN=<跟 admin 的 BOT_API_TOKEN 同一个值>`。
+- bot 的 Doppler `prd` 配置里，`ADMIN_API_TOKEN` 要跟 admin `prd` 的 `BOT_API_TOKEN` 同一个值。
 - **要先启动 admin，再启动 bot**，否则 bot 找不到这个网络，启动会失败。
 - 测试版 bot（`compose.nas.dev.yaml`）不要接到这里：两个 bot 上报到同一个 admin，群组同步会互相覆盖。
 

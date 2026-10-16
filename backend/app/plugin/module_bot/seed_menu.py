@@ -1,4 +1,4 @@
-"""把 sql/sys_menu.json 里本项目自己加的菜单（Bot管理、项目依赖，以及挂在框架「AI管理」下的 AI 调用日志）补进已初始化过的数据库。
+"""把 sql/sys_menu.json 里本项目自己加的菜单（Bot管理、项目依赖，以及挂在框架「AI管理」下的 AI 调用日志、「接口管理」下的第三方接口）补进已初始化过的数据库。
 
 种子数据只在 sys_menu 为空时导入，已有数据的库（本机开发库、已部署的 NAS）不会自动拿到新菜单，
 故用此脚本按 route_name 补齐缺少的节点；已存在的节点不改动，可重复执行。
@@ -11,7 +11,7 @@ import asyncio
 import json
 import os
 
-ROOT_ROUTE_NAMES = ("Bot", "Project", "AI")
+ROOT_ROUTE_NAMES = ("Bot", "Project", "AI", "Swagger")
 
 
 async def main() -> None:

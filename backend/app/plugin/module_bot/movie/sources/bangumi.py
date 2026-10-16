@@ -1,0 +1,48 @@
+"""Bangumi (bgm.tv, no key): Chinese titles, scores and staff of anime entries.
+
+Bangumi asks clients to identify themselves with a User-Agent; requests are serialized GAP_SECONDS
+apart to stay polite.
+"""
+
+import asyncio
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from .base import SourceUnavailable, fetch, json_or_none
+
+API_URL = "https://api.bgm.tv"
+USER_AGENT = "yohaneowo-admin/1.0 (https://github.com/yohaneowo)"
+GAP_SECONDS = 0.5
+ANIME = 2
+_queue = asyncio.Lock()
+
+
+async def _request(db: AsyncSession, path: str, *, method: str = "GET", params: dict | None = None, json: Any = None) -> Any:
+    async with _queue:
+        response = await fetch(db, "bangumi", f"{API_URL}{path}", method=method, params=params, json=json, headers={"User-Agent": USER_AGENT})
+        await asyncio.sleep(GAP_SECONDS)
+    if response.status_code == 404:
+        return None
+    body = json_or_none(response)
+    if not 200 <= response.status_code < 300 or body is None:
+        raise SourceUnavailable(f"Bangumi 回应 HTTP {response.status_code}")
+    return body
+
+
+async def search(db: AsyncSession, keyword: str, date_from: str, date_to: str) -> list[dict]:
+    """Anime entries matching the keyword that first aired between the two dates (YYYY-MM-DD, inclusive)."""
+    body = await _request(
+        db,
+        "/v0/search/subjects",
+        method="POST",
+        params={"limit": 10},
+        json={"keyword": keyword, "filter": {"type": [ANIME], "air_date": [f">={date_from}", f"<={date_to}"]}},
+    )
+    return (body or {}).get("data") or []
+
+
+async def persons(db: AsyncSession, subject_id: int) -> list[dict]:
+    """Staff and companies of an entry: [{id, name, relation (e.g. 导演), type (1 person, 2 company)}]."""
+    body = await _request(db, f"/v0/subjects/{subject_id}/persons")
+    return body if isinstance(body, list) else []

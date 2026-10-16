@@ -39,8 +39,12 @@ COPY ./backend/ /home/
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin app \
  && mkdir -p /home/logs /home/static/upload /home/alembic/versions \
  && chown -R app:app /home
+# 设了 DOPPLER_TOKEN（Doppler prd 配置的 service token）时，启动时从 Doppler 取密钥；没设就照原本的环境变量启动
+COPY --from=dopplerhq/cli:3 /bin/doppler /usr/local/bin/doppler
+
 USER app
 
 EXPOSE 8001
 
+ENTRYPOINT ["/bin/sh", "-c", "if [ -n \"$DOPPLER_TOKEN\" ]; then exec doppler run -- \"$@\"; else exec \"$@\"; fi", "--"]
 CMD ["python", "main.py", "run", "--env=prod"]
