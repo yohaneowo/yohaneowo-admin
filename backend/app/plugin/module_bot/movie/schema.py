@@ -6,9 +6,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.core.validator import DateTimeStr
 
 DiscordId = Annotated[str, Field(pattern=r"^[0-9]{15,22}$")]
+# The website's account id (Better Auth); never shown to anyone, only used as a key.
+SiteUserId = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
 
 
 class SubscriptionIn(BaseModel):
+    """A profile's Trakt details as the bot's dev import sends them (already resolved)."""
+
     model_config = ConfigDict(extra="forbid")
     traktUser: str = Field(min_length=1, max_length=255, pattern=r"^[^/\\\\?#\s]+$")
     traktName: str = Field(min_length=1, max_length=255)
@@ -16,13 +20,27 @@ class SubscriptionIn(BaseModel):
     subscribedAt: datetime | None = None
 
 
+class ProfileIn(BaseModel):
+    """What a person types on the website: a Trakt profile link or username, and where they watch."""
+
+    model_config = ConfigDict(extra="forbid")
+    trakt: str = Field(min_length=1, max_length=300)
+    region: str = Field(pattern=r"^[A-Z]{2}$")
+    # The website account's linked Discord user, so the bot can find this profile.
+    discordId: DiscordId | None = None
+
+
 class SubscriptionOut(BaseModel):
-    userId: str
+    profileId: str
+    # Discord user id ("userId" is what the bot has always called it); None until Discord is linked.
+    userId: str | None
+    siteUserId: str | None
     traktUser: str
     traktName: str
     region: str
     subscribedAt: DateTimeStr
     active: bool
+    recommendations: bool
     revision: str
     syncedAt: DateTimeStr | None
     syncError: str | None

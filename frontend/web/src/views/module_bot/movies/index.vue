@@ -1,7 +1,7 @@
 <template>
   <div class="fa-full-height">
     <ElAlert
-      title="观影资料保存在 admin；独立同步任务更新 Trakt / TMDB，Discord bot 离线仍可查看已保存的统计。"
+      title="观影档案在网站上建立（Trakt 帐号与地区），可关联 Discord 帐号接收 bot 的每日推荐；同步任务更新 Trakt / TMDB，bot 离线仍可查看统计。"
       type="info"
       :closable="false"
     />
@@ -39,14 +39,26 @@ const {
     apiFn: MoviesAPI.list,
     apiParams: { page_no: 1, page_size: 20 },
     columnsFactory: () => [
-      { prop: "userId", label: "Discord ID", minWidth: 190 },
       { prop: "traktName", label: "Trakt", minWidth: 150 },
+      {
+        prop: "userId",
+        label: "Discord ID",
+        minWidth: 190,
+        formatter: (row: MovieSubscription) => row.userId ?? "—",
+      },
+      {
+        prop: "siteUserId",
+        label: "网站帐号",
+        width: 100,
+        formatter: (row: MovieSubscription) => (row.siteUserId ? "已关联" : "—"),
+      },
       { prop: "region", label: "地区", width: 80 },
       {
-        prop: "active",
-        label: "订阅",
-        width: 90,
-        formatter: (row: MovieSubscription) => (row.active ? "有效" : "已取消"),
+        prop: "recommendations",
+        label: "Discord 推荐",
+        width: 110,
+        formatter: (row: MovieSubscription) =>
+          !row.active ? "已取消" : row.recommendations ? "开启" : "关闭",
       },
       { prop: "syncedAt", label: "更新于（台北）", minWidth: 180 },
       {
@@ -70,7 +82,7 @@ const {
                   artType: "edit",
                   perm: "module_bot:movies:refresh",
                   run: async () => {
-                    await MoviesAPI.refresh(row.userId);
+                    await MoviesAPI.refresh(row.profileId);
                     await refreshData();
                   },
                 },

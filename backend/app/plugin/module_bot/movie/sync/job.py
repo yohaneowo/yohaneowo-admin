@@ -55,11 +55,11 @@ async def run_once() -> bool:
     try:
         snapshot, taste, more = await compute(job["traktUser"])
     except Exception as error:  # noqa: BLE001 - any failure keeps the previous snapshot and retries later
-        logger.warning(f"[movie-sync] Sync failed for {job['userId']}: {error}")
+        logger.warning(f"[movie-sync] Sync failed for {job['profileId']}: {error}")
     async with async_db_session() as db, db.begin():
-        stored = await service.finish_sync(db, job["userId"], job["revision"], job["leaseId"], snapshot, taste, again=more)
+        stored = await service.finish_sync(db, job["profileId"], job["revision"], job["leaseId"], snapshot, taste, again=more)
     if snapshot is not None and stored:
-        logger.info(f"[movie-sync] Statistics snapshot saved for {job['userId']}.")
+        logger.info(f"[movie-sync] Statistics snapshot saved for {job['profileId']}.")
     return True
 
 

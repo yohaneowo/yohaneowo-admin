@@ -1,10 +1,13 @@
 import { request } from "@utils";
 export interface MovieSubscription {
-  userId: string;
+  profileId: string;
+  userId: string | null;
+  siteUserId: string | null;
   traktUser: string;
   traktName: string;
   region: string;
   active: boolean;
+  recommendations: boolean;
   subscribedAt: string;
   syncedAt: string | null;
   syncError: string | null;

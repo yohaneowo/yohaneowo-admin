@@ -42,21 +42,34 @@ async def check_lifecycle():
     bot = {"X-Bot-Token": "test-bot"}
     site = {"X-Movies-Token": "test-site"}
     uid = "123456789012345678"
+    account = "siteUser01"
     sub = f"/internal/movies/subscribers/{uid}"
-    view = f"/website/movies/{uid}"
-    payload = {"traktUser": "test-user", "traktName": "Test", "region": "TW"}
+    me = f"/website/movies/users/{account}"
+    linked = {"discordId": uid}
     with (
         patch("app.plugin.module_bot.internal_auth.get_bot_settings", return_value=SimpleNamespace(BOT_API_TOKEN="test-bot")),
         patch("app.plugin.module_bot.movie.auth.site_token", return_value="test-site"),
+        patch("app.plugin.module_bot.movie.sources.trakt.resolve_user", AsyncMock(return_value=("test-user", "Test"))),
     ):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-            assert (await client.get(view)).status_code == 401
-            assert (await client.put(sub, headers=site, json=payload)).status_code == 401
-            assert (await client.get(view, headers=site)).json()["data"]["subscription"] is None
-            assert (await client.put(sub, headers=bot, json=payload)).status_code == 200
+            assert (await client.get(me)).status_code == 401
+            assert (await client.put(sub, headers=site)).status_code == 401
+            assert (await client.get(me, headers=site)).json()["data"]["subscription"] is None
+            # The bot can't subscribe a Discord user who has no profile yet.
+            assert (await client.put(sub, headers=bot)).status_code == 404
+            # The website creates the profile (Trakt details resolved by admin), without Discord.
+            created = (await client.put(me, headers=site, json={"trakt": "https://trakt.tv/users/test-user", "region": "TW"})).json()["data"]["subscription"]
+            assert created["traktUser"] == "test-user" and created["userId"] is None and created["recommendations"] is False
+            assert (await client.get(sub, headers=bot)).json()["data"] is None
+            # Linking Discord on the website attaches it; then the bot can turn recommendations on.
+            attached = (await client.get(me, headers=site, params=linked)).json()["data"]["subscription"]
+            assert attached["userId"] == uid and attached["profileId"] == created["profileId"]
+            enabled = (await client.put(sub, headers=bot)).json()["data"]
+            assert enabled["recommendations"] is True
+            assert [row["userId"] for row in (await client.get("/internal/movies/subscribers", headers=bot)).json()["data"]] == [uid]
             async with factory.begin() as db:
                 job = await service.claim(db)
-            assert job["userId"] == uid
+            assert job["profileId"] == created["profileId"] and job["userId"] == uid
             async with factory.begin() as db:
                 assert await service.claim(db) is None
             snapshot = {
@@ -75,30 +88,43 @@ async def check_lifecycle():
             }
             stored = {**snapshot, "films": [], "ratedIds": [], "depth": None, "depthGroups": 0}
             taste = {"version": 1, "mean": 7, "seenIds": [], "ratings": [], "genres": [], "people": [], "historyItems": []}
-            # A stale lease (subscription changed, or another sync took over) is dropped.
+            # A stale lease (profile changed, or another sync took over) is dropped.
             async with factory.begin() as db:
-                assert not await service.finish_sync(db, uid, "stale", job["leaseId"], stored, taste)
+                assert not await service.finish_sync(db, job["profileId"], "stale", job["leaseId"], stored, taste)
             assert (await client.get(f"/internal/movies/taste/{uid}", headers=bot)).json()["data"] is None
             async with factory.begin() as db:
-                assert await service.finish_sync(db, uid, job["revision"], job["leaseId"], stored, taste)
-            saved_view = (await client.get(view, headers=site)).json()["data"]
+                assert await service.finish_sync(db, job["profileId"], job["revision"], job["leaseId"], stored, taste)
+            saved_view = (await client.get(me, headers=site)).json()["data"]
             assert saved_view["snapshot"] == stored
             assert (await client.get(f"/internal/movies/taste/{uid}", headers=bot)).json()["data"]["taste"] == taste
             # The only user with a count is at the top of the platform.
             assert saved_view["platform"] == {"watchedPercentile": 100, "users": 1, "showsPercentile": None, "showUsers": 0, "animePercentile": None, "animeUsers": 0}
-            assert (await client.post(view + "/refresh", headers=site)).status_code == 429
+            assert (await client.post(me + "/refresh", headers=site)).status_code == 429
             record = f"/internal/movies/records/{uid}/42"
             await client.patch(record, headers=bot, json={"data": {"score": 9}})
             await client.patch(record, headers=bot, json={"data": {"feedback": "watch"}})
             saved = (await client.get(f"/internal/movies/records/{uid}", headers=bot)).json()["data"]
             assert saved["42"] == {"score": 9, "feedback": "watch"}
+            # Unsubscribing in Discord only stops the DMs; the website keeps its statistics.
             await client.delete(sub, headers=bot)
-            assert (await client.get(view, headers=site)).json()["data"]["snapshot"] is None
-            assert (await client.get(view, headers=site)).json()["data"]["platform"] is None
-            assert (await client.patch(record, headers=bot, json={"revision": job["revision"], "data": {"score": 2}})).status_code == 409
-            imported = await client.post(f"/internal/movies/imports/subscribers/{uid}", headers=bot, json=payload)
-            assert imported.json()["data"]["created"] is False
             assert (await client.get(sub, headers=bot)).json()["data"] is None
+            assert (await client.get(me, headers=site)).json()["data"]["snapshot"] == stored
+            # A new Trakt account starts the statistics over, so the old revision is rejected.
+            with patch("app.plugin.module_bot.movie.sources.trakt.resolve_user", AsyncMock(return_value=("other-user", "Other"))):
+                changed = (await client.put(me, headers=site, json={"trakt": "other-user", "region": "JP"})).json()["data"]["subscription"]
+            assert changed["revision"] != job["revision"] and changed["userId"] == uid
+            assert (await client.patch(record, headers=bot, json={"revision": job["revision"], "data": {"score": 2}})).status_code == 409
+            # Two profiles meeting (website account + a bot-created Discord profile): the website's wins.
+            other_uid = "987654321098765432"
+            await client.post(f"/internal/movies/imports/subscribers/{other_uid}", headers=bot, json={"traktUser": "bot-user", "traktName": "Bot", "region": "US"})
+            await client.patch(f"/internal/movies/records/{other_uid}/7", headers=bot, json={"data": {"score": 5}})
+            merged = (await client.get(me, headers=site, params={"discordId": other_uid})).json()["data"]["subscription"]
+            # The website's profile keeps its own Discord link; the bot-created profile is gone.
+            assert merged["profileId"] == created["profileId"] and merged["traktUser"] == "other-user" and merged["userId"] == uid
+            assert (await client.get(f"/internal/movies/records/{other_uid}", headers=bot)).status_code == 404
+            assert "7" in (await client.get(f"/internal/movies/records/{uid}", headers=bot)).json()["data"]
+            async with factory.begin() as db:
+                assert len((await db.scalars(select(MovieSubscriberModel))).all()) == 1
     await engine.dispose()
 
 

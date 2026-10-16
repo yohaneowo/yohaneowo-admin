@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from sqlalchemy import JSON, Boolean, DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
@@ -7,14 +8,22 @@ from app.core.base_model import MappedBase
 
 
 class MovieSubscriberModel(MappedBase):
+    """A movie profile: one Trakt account plus the statistics snapshot, taste and recommendation
+    state built from it. Owned by a website account (site_user_id) and/or a Discord user
+    (discord_id); either may be missing, and the website is where the Trakt details are entered."""
+
     __tablename__ = "bot_movie_subscriber"
 
-    discord_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    discord_id: Mapped[str | None] = mapped_column(String(32), nullable=True, unique=True)
+    site_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     trakt_user: Mapped[str] = mapped_column(String(255))
     trakt_name: Mapped[str] = mapped_column(String(255))
     region: Mapped[str] = mapped_column(String(2))
     subscribed_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Daily recommendations by Discord DM (the bot's /movie subscribe); needs discord_id.
+    recommendations: Mapped[bool] = mapped_column(Boolean, default=False)
     revision: Mapped[str] = mapped_column(String(36))
     snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Copied from the snapshot so the platform-wide rank is one indexed count, not a JSON scan.
@@ -33,9 +42,11 @@ class MovieSubscriberModel(MappedBase):
 
 
 class MovieRecordModel(MappedBase):
+    """The bot's recommendation history for a profile, one row per TMDB movie."""
+
     __tablename__ = "bot_movie_record"
 
-    discord_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     tmdb_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     data: Mapped[dict] = mapped_column(JSON)
 
