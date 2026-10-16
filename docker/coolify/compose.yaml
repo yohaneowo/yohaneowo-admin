@@ -1,5 +1,6 @@
 # yohaneowo-admin on Coolify (Docker Compose build pack, compose file docker/coolify/compose.yaml).
-# Everything is built from this repo on push; nothing is pulled from Docker Hub.
+# Everything is built from this repo on push; nothing is pulled from Docker Hub. Build contexts are
+# written relative to the repo root: Coolify resolves them from there, not from this file's folder.
 #
 # What lives where:
 # - MySQL is a separate Coolify database resource (so Coolify's scheduled backups to R2 cover it);
@@ -26,7 +27,7 @@ services:
 
     backend:
         build:
-            context: ../..
+            context: .
             dockerfile: docker/coolify/backend.Dockerfile
         restart: unless-stopped
         environment:
@@ -69,7 +70,7 @@ services:
 
     web:
         build:
-            context: ../..
+            context: .
             dockerfile: docker/coolify/web.Dockerfile
         restart: unless-stopped
         environment:
