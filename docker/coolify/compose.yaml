@@ -55,6 +55,10 @@ services:
             ALLOWED_HOSTS: '["admin.yohaneowo.com","yohaneowo-admin-web","web"]'
         volumes:
             - upload:/home/static/upload
+        # The MySQL resource lives on Coolify's shared network, so backend joins it too.
+        networks:
+            - default
+            - coolify
         depends_on:
             redis:
                 condition: service_healthy
