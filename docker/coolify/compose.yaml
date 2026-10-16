@@ -24,6 +24,12 @@ services:
             retries: 5
         environment:
             REDIS_PASSWORD: ${SERVICE_PASSWORD_REDIS}
+        # Unique name: backend also sits on Coolify's shared network, where Coolify's own Redis
+        # answers to plain "redis".
+        networks:
+            default:
+                aliases:
+                    - admin-redis
 
     backend:
         build:
@@ -41,7 +47,7 @@ services:
             DATABASE_USER: fastapiadmin
             DATABASE_PASSWORD: ${DATABASE_PASSWORD}
             DATABASE_NAME: fastapiadmin
-            REDIS_HOST: redis
+            REDIS_HOST: admin-redis
             REDIS_PORT: '6379'
             REDIS_PASSWORD: ${SERVICE_PASSWORD_REDIS}
             REDIS_DB_NAME: '1'
