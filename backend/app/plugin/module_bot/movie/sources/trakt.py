@@ -69,6 +69,14 @@ async def get(db: AsyncSession, path: str, params: dict[str, Any] | None = None,
     return response.status_code, int(pages) if pages and pages.isdigit() else None, json_or_none(response)
 
 
+async def call(db: AsyncSession, method: str, path: str, *, params: dict[str, Any] | None = None, token: str | None = None, json: Any = None) -> tuple[int, int | None, Any]:
+    """One Trakt request of any method and path (internal callers only; `get` is the whitelisted
+    proxy for the bot). Returns (status, page count, body) like `get`."""
+    response = await fetch(db, "trakt", f"{API_URL}{path}", params=params, headers=_headers(token), timeout=30, method=method, json=json)
+    pages = response.headers.get("x-pagination-page-count")
+    return response.status_code, int(pages) if pages and pages.isdigit() else None, json_or_none(response)
+
+
 def authorize_url(redirect_uri: str, state: str, code_challenge: str) -> str:
     """Where the browser goes to let this app read the person's Trakt account. `code_challenge` is
     the S256 hash of the verifier the website keeps for the token exchange."""

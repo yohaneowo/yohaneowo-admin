@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base_model import MappedBase
@@ -59,6 +59,32 @@ class MovieRecordModel(MappedBase):
 
     profile_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     tmdb_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    data: Mapped[dict] = mapped_column(JSON)
+
+
+class MoviePickModel(MappedBase):
+    """One `/movie recommend` pick: what was shown to whom, and what they did with it (想看 →
+    watchlist, 看过了 → watched + rating, 换一部 → skip). Counts the day's quota, keeps a film
+    from being picked again for a month and feeds the mode weights."""
+
+    __tablename__ = "bot_movie_pick"
+    __table_args__ = (Index("ix_bot_movie_pick_profile_day", "profile_id", "day"), Index("ix_bot_movie_pick_profile_shown", "profile_id", "shown_at"))
+
+    pick_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    profile_id: Mapped[str] = mapped_column(String(36))
+    tmdb_id: Mapped[int] = mapped_column(Integer)
+    # comfort / bridge / explore
+    mode: Mapped[str] = mapped_column(String(16))
+    # The Taipei calendar day the pick counts against.
+    day: Mapped[str] = mapped_column(String(10))
+    shown_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+    title: Mapped[str] = mapped_column(String(500))
+    reason: Mapped[str] = mapped_column(String(500))
+    # watchlist / watched / skip, None while the person has not answered.
+    action: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    acted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # The card the bot showed (title, overview, poster…), so /movie status can list it.
     data: Mapped[dict] = mapped_column(JSON)
 
 

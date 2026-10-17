@@ -11,13 +11,14 @@ from app.core.base_schema import AuthSchema
 from app.core.dependencies import AuthPermission, db_getter
 
 from ..internal_auth import verify_bot_token
-from . import people, service
+from . import people, recommend, service
 from .auth import verify_site_token
 from .model import MovieSubscriberModel
-from .schema import CacheBatch, CacheKeys, DiscordId, RatingsIn, RecordPatch, RegionIn, SiteUserId, SourceRequest, SubscriptionIn, TraktConnectIn, WikimediaRequest
+from .schema import CacheBatch, CacheKeys, DiscordId, PickIn, RatingsIn, RecordPatch, RegionIn, SiteUserId, SourceRequest, SubscriptionIn, TraktConnectIn, WatchedIn, WikimediaRequest
 from .sources import omdb, tmdb, trakt, wikipedia
 from .sources.base import SourceUnavailable
 from .sync import job
+from .sync.history import TraktTokenError
 
 Db = Annotated[AsyncSession, Depends(db_getter, scope="function")]
 CacheNamespace = Literal["tmdb", "embeddings", "wikipedia", "tmdb_person", "tmdb_collection"]
@@ -64,6 +65,64 @@ async def delete_subscriber(discord_id: DiscordId, db: Db):
     """Turn daily recommendations off; the profile and its statistics stay."""
     await service.set_recommendations(db, discord_id, False)
     return SuccessResponse()
+
+
+# /movie recommend: random picks from the profile's pools. The Trakt token is required (403
+# traktRequired), three picks a day (429 dailyLimit), an empty pool answers 404 nothingToPick.
+def _pick_errors(error: Exception) -> HTTPException:
+    if isinstance(error, recommend.TraktRequired):
+        return HTTPException(403, "traktRequired")
+    if isinstance(error, recommend.DailyLimit):
+        return HTTPException(429, "dailyLimit")
+    if isinstance(error, recommend.NothingToPick):
+        return HTTPException(404, "nothingToPick")
+    if isinstance(error, LookupError):
+        return HTTPException(404, "pickNotFound")
+    if isinstance(error, SourceUnavailable):
+        return HTTPException(503, str(error))
+    return HTTPException(502, "traktTokenRejected")
+
+
+@MovieInternalRouter.post("/picks/{discord_id}")
+async def post_pick(discord_id: DiscordId, data: PickIn, db: Db):
+    row = await _bot_profile(db, discord_id)
+    try:
+        card = await recommend.pick(db, row, {"genre": data.genre, "decade": data.decade, "maxRuntime": data.maxRuntime}, data.skip)
+    except (recommend.TraktRequired, recommend.DailyLimit, recommend.NothingToPick, SourceUnavailable, TraktTokenError) as error:
+        raise _pick_errors(error) from error
+    return SuccessResponse(data=card)
+
+
+@MovieInternalRouter.get("/picks/{discord_id}")
+async def list_picks(discord_id: DiscordId, db: Db):
+    """Today's quota and the recent picks, newest first."""
+    row = await _bot_profile(db, discord_id)
+    recent = await recommend._recent_picks(db, row.profile_id)  # noqa: SLF001
+    return SuccessResponse(
+        data={
+            "remainingToday": max(0, recommend.DAILY_PICKS - await recommend.picks_today(db, row.profile_id)),
+            "traktConnected": service.tokens_of(row) is not None and not row.trakt_reauth,
+            "picks": [recommend.pick_out(p) for p in sorted(recent, key=lambda p: p.shown_at or service.utcnow(), reverse=True)],
+        }
+    )
+
+
+@MovieInternalRouter.post("/picks/{discord_id}/{pick_id}/watchlist")
+async def post_pick_watchlist(discord_id: DiscordId, pick_id: Annotated[str, Field(max_length=36)], db: Db):
+    row = await _bot_profile(db, discord_id)
+    try:
+        return SuccessResponse(data=await recommend.want(db, row, pick_id))
+    except (recommend.TraktRequired, LookupError, SourceUnavailable, TraktTokenError) as error:
+        raise _pick_errors(error) from error
+
+
+@MovieInternalRouter.post("/picks/{discord_id}/{pick_id}/watched")
+async def post_pick_watched(discord_id: DiscordId, pick_id: Annotated[str, Field(max_length=36)], data: WatchedIn, db: Db):
+    row = await _bot_profile(db, discord_id)
+    try:
+        return SuccessResponse(data=await recommend.watched(db, row, pick_id, data.rating))
+    except (recommend.TraktRequired, LookupError, SourceUnavailable, TraktTokenError) as error:
+        raise _pick_errors(error) from error
 
 
 @MovieInternalRouter.get("/records/{discord_id}")

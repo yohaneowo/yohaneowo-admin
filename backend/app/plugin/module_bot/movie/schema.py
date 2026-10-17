@@ -33,6 +33,24 @@ class TraktConnectIn(BaseModel):
     discordId: DiscordId | None = None
 
 
+class PickIn(BaseModel):
+    """What `/movie recommend` asked for."""
+
+    model_config = ConfigDict(extra="forbid")
+    # TMDB genre id; the bot offers TMDB's movie genres as choices.
+    genre: int | None = Field(default=None, ge=1)
+    # The decade's first year (1990 = the 1990s).
+    decade: int | None = Field(default=None, ge=1880, le=2100, multiple_of=10)
+    maxRuntime: int | None = Field(default=None, ge=30, le=600)
+    # 换一部: the pick being replaced, marked as skipped.
+    skip: str | None = Field(default=None, max_length=36)
+
+
+class WatchedIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    rating: int | None = Field(default=None, ge=1, le=10)
+
+
 class RegionIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     region: str = Field(pattern=r"^[A-Z]{2}$")
