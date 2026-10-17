@@ -44,7 +44,8 @@ class FakeWorld:
         self.writes: list[tuple[str, dict]] = []
         # 12 watched films (past the cold start), comedy / drama lovers who rate high.
         self.watched = [{"plays": 1 if i < 11 else 3, "last_watched_at": "2026-01-01T00:00:00.000Z", "movie": _movie(i)} for i in range(1, 13)]
-        self.ratings = [{"rating": 9 if i % 2 else 8, "rated_at": "2026-01-01T00:00:00.000Z", "movie": _movie(i)} for i in range(1, 13)]
+        # Films 11 and 12 were watched but never rated: 补评分 material.
+        self.ratings = [{"rating": 9 if i % 2 else 8, "rated_at": "2026-01-01T00:00:00.000Z", "movie": _movie(i)} for i in range(1, 11)]
         self.details = {i: _details(i, [(35, "喜剧"), (18, "剧情")]) for i in range(1, 13)}
         # Candidates: comedies from Trakt's recommendations and one related title.
         for i in range(101, 109):
@@ -193,6 +194,60 @@ async def check_recommend_flow():
             assert world.writes[-2][1]["movies"][0]["rating"] == 8
             # Unknown pick.
             assert (await client.post(f"/internal/movies/picks/{uid}/nope/watchlist", headers=bot)).status_code == 404
+
+
+def test_backfill_pool_and_refund():
+    asyncio.run(check_backfill())
+
+
+async def check_backfill():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        for model in (MovieSubscriberModel, MovieRecordModel, MovieCacheModel, MoviePickModel):
+            await conn.run_sync(model.__table__.create)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    world = FakeWorld()
+    cache: dict[tuple[str, str], dict] = {}
+
+    async def read_cache(namespace, keys):
+        return {k: cache[(namespace, k)] for k in keys if (namespace, k) in cache}
+
+    async def write_cache(namespace, items):
+        cache.update({(namespace, k): v for k, v in items.items()})
+
+    with (
+        patch.object(recommend, "_trakt", world.trakt),
+        patch.object(recommend, "tmdb_get", world.tmdb),
+        patch.object(recommend, "load_details", world.load_details),
+        patch.object(recommend, "read_cache", read_cache),
+        patch.object(recommend, "write_cache", write_cache),
+        patch.object(recommend, "async_db_session", factory),
+        patch("app.utils.crypto_util.CryptoUtil.decrypt", side_effect=lambda value: value.removeprefix("enc:")),
+    ):
+        pools = await recommend.build_pools("token", set(), "p1")
+        assert sorted(c["tmdbId"] for c in pools["pools"]["backfill"]) == [11, 12]
+        assert all(c["tmdbId"] not in (11, 12) for mode in recommend.MODES for c in pools["pools"][mode])
+        # A 补评分 pick that gets its rating writes only the rating and gives the pick back.
+        async with factory.begin() as db:
+            row = MovieSubscriberModel(
+                profile_id="p1",
+                trakt_user="u",
+                trakt_name="U",
+                region="TW",
+                revision="r",
+                trakt_access_token="enc:a",
+                trakt_refresh_token="enc:r",
+                trakt_token_expires_at=service.utcnow() + timedelta(days=30),
+            )
+            db.add(row)
+            pick = MoviePickModel(profile_id="p1", tmdb_id=11, mode="backfill", day=recommend.today_taipei().isoformat(), title="Film 11", reason="补评分", data={})
+            db.add(pick)
+            await db.flush()
+            assert await recommend.picks_today(db, "p1") == 1
+            result = await recommend.watched(db, row, pick.pick_id, 7)
+            assert result["refunded"] is True and result["action"] == "rated" and result["remainingToday"] == recommend.DAILY_PICKS
+            assert [w[0] for w in world.writes] == ["/sync/ratings"]
+            assert await recommend.picks_today(db, "p1") == 0
 
 
 def test_blind_spots_follow_base_rates():

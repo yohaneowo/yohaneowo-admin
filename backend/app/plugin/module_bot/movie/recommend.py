@@ -23,7 +23,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import async_db_session
@@ -84,7 +84,9 @@ CONFIG: dict[str, Any] = {
     "genreDiscover": {"voteCountGte": 3000, "voteAverageGte": 7.5, "pages": 3},
     "decadeDiscover": {"voteCountGte": 1500, "voteAverageGte": 7.3, "pages": 2},
     "collection": {"minAvg": 7.0, "minTotalVotes": 5000, "minFirstFilm": 7.0},
-    "initialWeights": {"comfort": 0.5, "bridge": 0.25, "explore": 0.25},
+    # backfill: films the person watched but never rated on Trakt; rating one refunds the pick.
+    "initialWeights": {"comfort": 0.4, "bridge": 0.2, "explore": 0.2, "backfill": 0.2},
+    "backfillPoolSize": 60,
     "coldStartMinWatched": 10,
     "bridgeMinPoolSize": 3,
     "relatedSeeds": 5,
@@ -94,6 +96,8 @@ CONFIG: dict[str, Any] = {
 }
 
 MODES = ("comfort", "bridge", "explore")
+BACKFILL = "backfill"
+ALL_MODES = (*MODES, BACKFILL)
 
 # The AI step: Claude picks one of the best-scored candidates and writes the reason in the person's
 # words; when it fails or answers off-list, the plain weighted sampling decides.
@@ -304,6 +308,8 @@ async def build_profile(token: str) -> dict:
     return {
         "mean": mean,
         "watched": watched_ids,
+        "unrated": [tid for tid in watched_ids if tid not in rating_by_id],
+        "lastWatched": last_watched,
         "traktIds": trakt_ids,
         "titles": titles,
         "ratings": rating_by_id,
@@ -598,6 +604,27 @@ async def _bridge_pool(profile: dict, excluded: set[int], blind_genre_scores: di
     return _diversify(pool, seed_key="personId")
 
 
+def _backfill_pool(profile: dict) -> list[dict]:
+    """Watched films with no Trakt rating, most recent first: a nudge to complete the history."""
+    pool = []
+    now = _now()
+    for tid in profile["unrated"]:
+        d = profile["details"].get(tid)
+        if not d:
+            continue
+        watched_at = profile["lastWatched"].get(tid)
+        recency = 0.5
+        if watched_at:
+            try:
+                days = (now - datetime.fromisoformat(watched_at.replace("Z", "+00:00"))).days
+                recency = _clamp(1 - days / 730)
+            except ValueError:
+                pass
+        score = 0.7 * recency + 0.3 * bayes(d.get("voteAverage"), d.get("voteCount"), CONFIG["comfortM"])
+        pool.append(_candidate(tid, d, score=round(score, 4), inWatchlist=False, source=BACKFILL, watchedAt=(watched_at or "")[:10] or None))
+    return sorted(pool, key=lambda c: -c["score"])[: CONFIG["backfillPoolSize"]]
+
+
 def _diversify(pool: list[dict], *, seed_key: str) -> list[dict]:
     """Best first, with no seed, director, series or genre taking over the pool."""
     kept: list[dict] = []
@@ -639,9 +666,10 @@ async def build_pools(token: str, recent_pick_ids: set[int], profile_id: str = "
     comfort = await _comfort_pool(profile, token, excluded)
     explore = await _explore_pool(profile, excluded, blind_genre_scores, blind_decade_scores)
     bridge = await _bridge_pool(profile, excluded, blind_genre_scores)
+    backfill = _backfill_pool(profile)
     logger.info(
         f"[movie-recommend] Pools built for {profile_id or '?'} in {time.monotonic() - started:.1f}s: "
-        f"watched {len(profile['watched'])}, rated {len(profile['ratings'])}, comfort {len(comfort)}, bridge {len(bridge)}, explore {len(explore)}, "
+        f"watched {len(profile['watched'])}, rated {len(profile['ratings'])}, comfort {len(comfort)}, bridge {len(bridge)}, explore {len(explore)}, backfill {len(backfill)}, "
         f"blind genres {sorted(blind_genre_scores)}, blind decades {sorted(blind_decade_scores)}"
     )
     top = lambda pref, limit: [k for k, _ in sorted(pref.items(), key=lambda kv: -kv[1])[:limit]]  # noqa: E731
@@ -669,7 +697,7 @@ async def build_pools(token: str, recent_pick_ids: set[int], profile_id: str = "
         "watchlistedAt": {str(k): v for k, v in profile["watchlistedAt"].items()},
         "blindGenres": {str(k): v for k, v in blind_genre_scores.items()},
         "blindDecades": {str(k): v for k, v in blind_decade_scores.items()},
-        "pools": {"comfort": comfort, "explore": explore, "bridge": bridge},
+        "pools": {"comfort": comfort, "explore": explore, "bridge": bridge, "backfill": backfill},
     }
 
 
@@ -715,19 +743,25 @@ async def _pools_for(row: MovieSubscriberModel, token: str, recent_ids: set[int]
     return pools
 
 
-def _mode_weights(picks: list[MoviePickModel]) -> dict[str, float]:
-    """The configured mix, nudged toward the modes whose picks got 想看 rather than 换一部."""
-    wants = dict.fromkeys(MODES, 0)
-    skips = dict.fromkeys(MODES, 0)
+def _mode_weights(picks: list[MoviePickModel], modes: tuple[str, ...] = MODES) -> dict[str, float]:
+    """The configured mix over `modes`, nudged toward the modes whose picks got 想看 (or, for
+    补评分, a rating) rather than 换一部."""
+    wants = dict.fromkeys(modes, 0)
+    skips = dict.fromkeys(modes, 0)
     for pick in picks:
         if pick.mode in wants:
-            if pick.action == "watchlist":
+            if pick.action in ("watchlist", "rated"):
                 wants[pick.mode] += 1
             elif pick.action == "skip":
                 skips[pick.mode] += 1
-    weights = {m: CONFIG["initialWeights"][m] * (wants[m] + 1) / (wants[m] + skips[m] + 2) for m in MODES}
+    weights = {m: CONFIG["initialWeights"][m] * (wants[m] + 1) / (wants[m] + skips[m] + 2) for m in modes}
     total = sum(weights.values())
     return {m: w / total for m, w in weights.items()}
+
+
+def _counts_today(pick: MoviePickModel, today: str) -> bool:
+    """A 补评分 pick that got its rating is refunded: it no longer uses up the day's quota."""
+    return pick.day == today and not (pick.mode == BACKFILL and pick.action == "rated")
 
 
 def _matches(c: dict, filters: dict) -> bool:
@@ -753,6 +787,9 @@ def _reason(c: dict, mode: str, pools: dict, profile_mean: float) -> str:
             except ValueError:
                 months = None
         return f"这部在你的想看列表里躺了 {months} 个月" if months else "这部在你的想看列表里"
+    if mode == BACKFILL:
+        when = f"{c['watchedAt']} " if c.get("watchedAt") else ""
+        return f"你{when}看过这部，但 Trakt 上还没评分。补个分，这次推荐不算额度。"
     if mode == "comfort":
         if c.get("source") == "related" and rated:
             return f"{rated}，这部和它很像"
@@ -882,7 +919,7 @@ async def pick(db: AsyncSession, row: MovieSubscriberModel, filters: dict, skip_
         for previous in recent:
             if previous.pick_id == skip_pick_id and previous.action is None:
                 previous.action = "skip"
-    used = sum(1 for p in recent if p.day == today)
+    used = sum(1 for p in recent if _counts_today(p, today))
     if used >= DAILY_PICKS:
         raise DailyLimit(next_midnight_taipei())
     recent_ids = {p.tmdb_id for p in recent}
@@ -894,15 +931,17 @@ async def pick(db: AsyncSession, row: MovieSubscriberModel, filters: dict, skip_
     await _report(row.profile_id, "card")
     rng = random.Random()
     cold = pools["watchedCount"] < CONFIG["coldStartMinWatched"]
-    weights = _mode_weights(recent)
-    order = ["explore"] if cold else rng.choices(MODES, weights=[weights[m] for m in MODES], k=1)
+    # 补评分 only joins the draw when there is something to rate (and never on a cold account).
+    modes = ALL_MODES if pools["pools"].get(BACKFILL) and not cold else MODES
+    weights = _mode_weights(recent, modes)
+    order = ["explore"] if cold else rng.choices(modes, weights=[weights[m] for m in modes], k=1)
     # Fallbacks: a thin bridge pool hands over to comfort; an empty pool tries the others.
-    for mode in order + [m for m in MODES if m not in order]:
-        candidates = [c for c in pools["pools"][mode] if c["tmdbId"] not in recent_ids and _matches(c, filters)]
+    for mode in order + [m for m in modes if m not in order]:
+        candidates = [c for c in pools["pools"].get(mode, []) if c["tmdbId"] not in recent_ids and _matches(c, filters)]
         if mode == "bridge" and len(candidates) < CONFIG["bridgeMinPoolSize"]:
             continue
         tried: set[int] = set()
-        ai = await _ai_choice(db, row, mode, candidates, pools, filters)
+        ai = None if mode == BACKFILL else await _ai_choice(db, row, mode, candidates, pools, filters)
         while candidates and len(tried) < 8:
             if ai and ai[0]["tmdbId"] not in tried:
                 chosen, ai_reason = ai
@@ -985,13 +1024,16 @@ async def watched(db: AsyncSession, row: MovieSubscriberModel, pick_id: str, rat
         status, _ = await _trakt("POST", "/sync/ratings", token, json={"movies": [{**movie, "rating": value, "rated_at": now}]})
         if status not in (200, 201):
             raise SourceUnavailable(f"Trakt 暂时无法写入评分（HTTP {status}）")
-    # Already marked watched (the person is changing their rating): don't add a second play.
-    if found.action != "watched":
+    backfill = found.mode == BACKFILL
+    # Already marked watched (a 补评分 pick, or the person is changing their rating): no second play.
+    if found.action not in ("watched", "rated") and not backfill:
         status, _ = await _trakt("POST", "/sync/history", token, json={"movies": [{**movie, "watched_at": now}]})
         if status not in (200, 201):
             raise SourceUnavailable(f"Trakt 暂时无法标记看过（HTTP {status}）")
-    logger.info(f"[movie-recommend] 看过了 for {row.profile_id}: {found.title} ({found.tmdb_id}) rating {value}{' (changed)' if found.action == 'watched' else ''}")
-    found.action = "watched"
+    changed = found.action in ("watched", "rated")
+    logger.info(f"[movie-recommend] {'补评分' if backfill else '看过了'} for {row.profile_id}: {found.title} ({found.tmdb_id}) rating {value}{' (changed)' if changed else ''}")
+    # A rated 补评分 pick is refunded (see _counts_today).
+    found.action = "rated" if backfill else "watched"
     found.rating = value
     found.acted_at = _now().replace(tzinfo=None)
     await db.flush()
@@ -1001,11 +1043,15 @@ async def watched(db: AsyncSession, row: MovieSubscriberModel, pick_id: str, rat
         locked = await service.by_id(session, row.profile_id, lock=True)
         if locked:
             locked.sync_requested = True
-    return {"pickId": pick_id, "action": "watched", "rated": True, "rating": value}
+    remaining = max(0, DAILY_PICKS - await picks_today(db, row.profile_id))
+    return {"pickId": pick_id, "action": found.action, "rated": True, "rating": value, "refunded": backfill and not changed, "remainingToday": remaining}
 
 
 async def picks_today(db: AsyncSession, profile_id: str) -> int:
-    return int(await db.scalar(select(func.count()).select_from(MoviePickModel).where(MoviePickModel.profile_id == profile_id, MoviePickModel.day == today_taipei().isoformat())) or 0)
+    """Today's picks that count against the quota (rated 补评分 picks are refunded)."""
+    today = today_taipei().isoformat()
+    rows = await db.scalars(select(MoviePickModel).where(MoviePickModel.profile_id == profile_id, MoviePickModel.day == today))
+    return sum(1 for p in rows if _counts_today(p, today))
 
 
 def pick_out(row: MoviePickModel) -> dict:
