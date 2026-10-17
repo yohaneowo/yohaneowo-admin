@@ -18,7 +18,7 @@ fork 自 [FastapiAdmin](https://github.com/fastapiadmin/FastapiAdmin)（远端 `
 ## 工作约定
 
 - 用中文回复。commit 讯息照现有格式：`feat(bot): …`、`fix(deploy): …`，中文摘要，结尾加 `Co-Authored-By`。只有被要求时才 commit / push。
-- 密钥在 Doppler（项目 `yohaneowo-admin`：`dev` = 本机，`prd` = NAS），不再用 `backend/env/.env.*`。不要印出值（`doppler secrets` 会印出，用 `--only-names`）。新电脑先 `doppler login`，再在本 repo 根目录 `doppler setup`。NAS 上 MySQL / Redis 密码仍在 `docker/nas/.env`（官方镜像读不到 Doppler）。Git Bash 里执行 `doppler` 要加 `env -u PWD`（它会读 Unix 格式的 `PWD`，找不到登录状态）。
+- 密钥在 Doppler（项目 `yohaneowo-admin`：`dev` = 本机，`stg` = Coolify 的 dev 部署，`prd` = 正式站），不再用 `backend/env/.env.*`。不要印出值（`doppler secrets` 会印出，用 `--only-names`）。新电脑先 `doppler login`，再在本 repo 根目录 `doppler setup`。NAS 上 MySQL / Redis 密码仍在 `docker/nas/.env`（官方镜像读不到 Doppler）。Git Bash 里执行 `doppler` 要加 `env -u PWD`（它会读 Unix 格式的 `PWD`，找不到登录状态）。
 - 后端改完跑 `uv run ruff check` 和 `uv run ruff format`（以现有文件的格式为准）。前端改完跑 `npx eslint`、`npx prettier --write`（只针对改过的文件）和 `npx vue-tsc --noEmit`。
 
 ## 时间与时区
@@ -54,6 +54,13 @@ fork 自 [FastapiAdmin](https://github.com/fastapiadmin/FastapiAdmin)（远端 `
 
 用户可能同时开着这个 repo 和 bot repo 的 Claude Code 对话。需要对接的功能在同一个对话里把两边一起做完（另一个 repo 用 `/add-dir` 加进来）。同一时间只让一个对话改同一个 repo：开始前看 `git status`，有不是自己做的未提交改动就不要覆盖，也不要混进自己的 commit。
 
-## 部署（NAS）
+## 部署（Coolify）
 
-`docker/nas/README.md` 有完整步骤。镜像用 `docker/nas/publish.sh` 从**已提交**的代码构建并推到 Docker Hub，NAS 只拉镜像。网页在 `http://<NAS>:18090/web`。要先启动 admin，再启动稳定版 bot，bot 才找得到 `yohaneowo-admin` 网络。
+跑在家里 Proxmox 虚拟机上的 Coolify（局域网 `http://192.168.0.210:8000`），用 Docker Compose build pack 从 GitHub 直接构建，不再经 Docker Hub：
+
+| 分支 | Coolify app | compose | 域名 | Doppler |
+| --- | --- | --- | --- | --- |
+| `master`（正式） | `yohaneowo-admin` | `docker/coolify/compose.yaml` | https://admin.yohaneowo.com | `prd` |
+| `develop`（dev） | `yohaneowo-admin-dev` | `docker/coolify/compose.dev.yaml` | https://admin-dev.yohaneowo.com | `stg` |
+
+push 对应分支就会经 GitHub webhook 自动构建部署；容器启动时自动 `alembic upgrade head`。两份 compose 要同步改，差别只有共享网络上的别名（正式 `yohaneowo-admin-web` / `admin-redis`，dev `yohaneowo-admin-dev-web` / `admin-dev-redis`）和 `ALLOWED_HOSTS`。MySQL 是 Coolify 的独立资源（`admin-mysql`、`admin-mysql-dev`），dev 库是 2026-10-17 从正式库复制出来的，之后各自独立。两个域名都在 Cloudflare Access 后面（只有站长能开）。流程：改动先推 `develop`，用户在 admin-dev 看过确认后，才把 `develop` 快进合并进 `master`；**没有用户确认不要合并进 `master`**。`docker/nas/` 是旧的 NAS 部署，已停用。
