@@ -279,11 +279,14 @@ SYNC_ERROR = "暂时无法从 Trakt / TMDB 更新，稍后自动重试。"
 REAUTH_ERROR = "Trakt 授权已失效，请在网站重新授权。"
 
 
-async def finish_sync(db: AsyncSession, profile_id: str, revision: str, lease_id: str, snapshot: dict | None, taste: dict | None, *, again: bool = False, reauth: bool = False) -> bool:
+async def finish_sync(
+    db: AsyncSession, profile_id: str, revision: str, lease_id: str, snapshot: dict | None, taste: dict | None, *, again: bool = False, reauth: bool = False, profile: dict | None = None
+) -> bool:
     """Store a sync's result (snapshot None = failed). False when the lease is stale: the
     profile changed or another sync took over, so the result is dropped. again: sync once
     more right away (the anime lookups ran out of time). reauth: Trakt rejected the owner's
-    token, so syncs pause until they authorize again."""
+    token, so syncs pause until they authorize again. profile: the Trakt user's current
+    profile, whose display name and avatar are copied over."""
     row = await by_id(db, profile_id, lock=True)
     if row is None or not row.active or row.revision != revision or row.lease_id != lease_id:
         return False
@@ -305,6 +308,9 @@ async def finish_sync(db: AsyncSession, profile_id: str, revision: str, lease_id
         row.synced_at = utcnow()
         row.sync_error, row.retry_after = None, None
         row.sync_requested = again
+        if profile:
+            row.trakt_name = (profile.get("name") or profile.get("username") or row.trakt_name)[:255]
+            row.trakt_avatar = ((profile.get("images") or {}).get("avatar") or {}).get("full") or None
     await db.flush()
     return True
 

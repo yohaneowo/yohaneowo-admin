@@ -119,6 +119,16 @@ def expiring(tokens: TraktTokens, within: timedelta = timedelta(days=7)) -> bool
     return tokens.expires_at <= datetime.now(UTC).replace(tzinfo=None) + within
 
 
+async def profile(db: AsyncSession, slug: str, token: str | None = None) -> dict | None:
+    """A Trakt user's public profile (username, name, avatar), or None when Trakt won't show it
+    (unknown, private without the owner's token) or is unreachable; never fails a sync."""
+    try:
+        status, _, body = await get(db, f"/users/{slug}", {"extended": "full"}, token=token)
+    except SourceUnavailable:
+        return None
+    return body if status == 200 and isinstance(body, dict) else None
+
+
 async def me(db: AsyncSession, token: str) -> dict:
     """The authorized person's own profile (slug, username, avatar, private)."""
     status, _, body = await get(db, "/users/me", {"extended": "full"}, token=token)

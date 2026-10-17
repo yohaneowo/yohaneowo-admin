@@ -84,8 +84,16 @@ async def run_once() -> bool:
         logger.warning(f"[movie-sync] Trakt token rejected for {job['profileId']}: {error}")
     except (SourceUnavailable, Exception) as error:  # noqa: BLE001 - any failure keeps the previous snapshot and retries later
         logger.warning(f"[movie-sync] Sync failed for {job['profileId']}: {error}")
+    # The profile's name and avatar follow Trakt; a miss here changes nothing.
+    profile = None
+    if snapshot is not None:
+        try:
+            async with async_db_session() as db, db.begin():
+                profile = await trakt.profile(db, job["traktUser"], token)
+        except Exception as error:  # noqa: BLE001
+            logger.warning(f"[movie-sync] Trakt profile lookup failed for {job['profileId']}: {error}")
     async with async_db_session() as db, db.begin():
-        stored = await service.finish_sync(db, job["profileId"], job["revision"], job["leaseId"], snapshot, taste, again=more, reauth=reauth)
+        stored = await service.finish_sync(db, job["profileId"], job["revision"], job["leaseId"], snapshot, taste, again=more, reauth=reauth, profile=profile)
     if snapshot is not None and stored:
         logger.info(f"[movie-sync] Statistics snapshot saved for {job['profileId']}.")
     return True
