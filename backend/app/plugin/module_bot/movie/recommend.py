@@ -14,8 +14,10 @@ says the lists changed. A pick is one row in bot_movie_pick: that is how the day
 30-day no-repeat rule and the mode weights (a tiny bandit on "想看" vs "换一部") are kept."""
 
 import asyncio
+import json
 import math
 import random
+import re
 import time
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -26,6 +28,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import async_db_session
 from app.core.logger import logger
+from app.plugin.module_ai_usage.gateway import service as ai_gateway
+from app.plugin.module_ai_usage.gateway.schema import AiCallerSchema, AiGatewayRequestSchema
 
 from . import service
 from .model import MoviePickModel, MovieSubscriberModel
@@ -41,7 +45,8 @@ GLOBAL_NAMESPACE = "recommend_global"
 # Where a pick is in its work, for the bot's "正在…" status (written per stage, read by polling).
 PROGRESS_NAMESPACE = "recommend_progress"
 STAGES = ("lists", "profile", "pools", "card")
-POOL_VERSION = 1
+# 2: the pools carry a taste summary for the AI re-ranking.
+POOL_VERSION = 2
 POOL_MAX_AGE = timedelta(hours=24)
 GLOBAL_MAX_AGE = timedelta(days=30)
 DISCOVER_MAX_AGE = timedelta(days=7)
@@ -83,6 +88,22 @@ CONFIG: dict[str, Any] = {
 }
 
 MODES = ("comfort", "bridge", "explore")
+
+# The AI step: Claude picks one of the best-scored candidates and writes the reason in the person's
+# words; when it fails or answers off-list, the plain weighted sampling decides.
+AI_MODEL = "claude-sonnet-5-5"
+AI_CANDIDATES = 12
+AI_TIMEOUT_SECONDS = 25
+AI_SYSTEM = (
+    "你是一位懂电影、也了解这位用户口味的朋友，正在替用户从几部候选里挑一部今晚看的电影。"
+    '只能从候选清单里选，回答一律是一个 JSON 对象：{"tmdbId": 数字, "reason": "字串"}，不要其他文字。'
+    "reason 用简体中文、口语、最多 60 字、两句以内，要点出这部片和用户口味的具体关联（喜欢的类型、导演、演员、相似的片），不剧透，不要重复片名。"
+)
+MODE_INTENT = {
+    "comfort": "这一轮的目标是「猜你喜欢」：选最可能合用户胃口的一部。",
+    "bridge": "这一轮的目标是「跨出一步」：候选都是用户几乎没看过的类型，但跟用户喜欢的导演或演员有关，选最容易让用户入门的一部。",
+    "explore": "这一轮的目标是「开新坑」：候选都是用户盲区里的经典或系列第一部，选最适合用户入门、口碑最稳的一部。",
+}
 
 
 class TraktRequired(Exception):
@@ -611,9 +632,21 @@ async def build_pools(token: str, recent_pick_ids: set[int], profile_id: str = "
         f"watched {len(profile['watched'])}, rated {len(profile['ratings'])}, comfort {len(comfort)}, bridge {len(bridge)}, explore {len(explore)}, "
         f"blind genres {sorted(blind_genre_scores)}, blind decades {sorted(blind_decade_scores)}"
     )
+    top = lambda pref, limit: [k for k, _ in sorted(pref.items(), key=lambda kv: -kv[1])[:limit]]  # noqa: E731
+    liked = sorted(((tid, w) for tid, w in profile["weights"].items() if w >= CONFIG["likedThreshold"]), key=lambda kv: -kv[1])[:10]
+    summary = {
+        "mean": round(profile["mean"], 1),
+        "watched": len(profile["watched"]),
+        "genres": [profile["genreNames"].get(g, str(g)) for g in top(profile["genrePref"], 5)],
+        "directors": [(profile["people"].get(p) or {}).get("name") for p in top(profile["directorPref"], 4)],
+        "actors": [(profile["people"].get(p) or {}).get("name") for p in top(profile["actorPref"], 5)],
+        "liked": [{"title": profile["titles"].get(tid), "rating": profile["ratings"].get(tid)} for tid, _ in liked],
+        "disliked": [profile["titles"].get(tid) for tid in profile["disliked"][:5]],
+    }
     return {
         "version": POOL_VERSION,
         "builtAt": _now().isoformat(),
+        "summary": summary,
         "activities": await last_activities(token),
         "mean": profile["mean"],
         "watchedCount": len(profile["watched"]),
@@ -727,6 +760,67 @@ def _reason(c: dict, mode: str, pools: dict, profile_mean: float) -> str:
     return f"你几乎没看过{genre}片，这是该类型票数最高的几部之一（{c.get('voteAverage')} 分，{c.get('voteCount'):,} 票）"
 
 
+def _ai_prompt(mode: str, candidates: list[dict], pools: dict, filters: dict) -> str:
+    summary = pools.get("summary") or {}
+    liked = "、".join(f"《{x['title']}》{x['rating']:g}分" for x in summary.get("liked") or [] if x.get("title") and x.get("rating") is not None)
+    asked = [
+        f"类型 {pools['genreNames'].get(str(filters['genre']), filters['genre'])}" if filters.get("genre") else None,
+        f"{filters['decade']} 年代" if filters.get("decade") else None,
+        f"{filters['maxRuntime']} 分钟内" if filters.get("maxRuntime") else None,
+    ]
+    lines = [
+        f"用户口味：看过 {summary.get('watched', '?')} 部电影，平均打 {summary.get('mean', '?')} 分。",
+        f"最常看的类型：{'、'.join(g for g in summary.get('genres') or [] if g) or '不明'}。",
+        f"喜欢的导演：{'、'.join(d for d in summary.get('directors') or [] if d) or '不明'}；喜欢的演员：{'、'.join(a for a in summary.get('actors') or [] if a) or '不明'}。",
+        f"打高分的片：{liked or '不明'}。",
+        f"不喜欢的片：{'、'.join(f'《{t}》' for t in summary.get('disliked') or [] if t) or '没有特别讨厌的'}。",
+        MODE_INTENT[mode],
+        f"用户这次指定的条件：{'、'.join(a for a in asked if a) or '没有'}。",
+        "候选（每行：tmdbId｜片名｜年份｜类型｜导演｜TMDB 评分/票数｜系统的推荐依据）：",
+    ]
+    for c in candidates:
+        lines.append(
+            f"{c['tmdbId']}｜{c.get('title')}｜{c.get('year') or '?'}｜{'/'.join(c.get('genres') or [])}｜{c.get('director') or '?'}｜{c.get('voteAverage') or '?'}/{c.get('voteCount') or '?'}｜{_reason(c, mode, pools, pools['mean'])}"
+        )
+    lines.append("请选一部并写理由，只回 JSON。")
+    return "\n".join(lines)
+
+
+async def _ai_choice(db: AsyncSession, row: MovieSubscriberModel, mode: str, candidates: list[dict], pools: dict, filters: dict) -> tuple[dict, str] | None:
+    """Claude's pick among the best candidates and its reason, or None (not configured, timed
+    out, malformed, or a film that isn't in the list)."""
+    shortlist = sorted(candidates, key=lambda c: -c["score"])[:AI_CANDIDATES]
+    if len(shortlist) < 2:
+        return None
+    request = AiGatewayRequestSchema(
+        project="yohaneowo-admin",
+        feature="movie-recommend",
+        caller=AiCallerSchema(platform="discord", id=row.discord_id, name=row.trakt_name, trigger="recommend"),
+        body={"model": AI_MODEL, "max_tokens": 300, "system": AI_SYSTEM, "messages": [{"role": "user", "content": _ai_prompt(mode, shortlist, pools, filters)}]},
+    )
+    try:
+        status, payload = await asyncio.wait_for(ai_gateway.claude(db, request), AI_TIMEOUT_SECONDS)
+    except ai_gateway.AiNotConfigured:
+        return None
+    except Exception as error:  # noqa: BLE001 - the plain sampling takes over
+        logger.warning(f"[movie-recommend] AI choice failed: {error}")
+        return None
+    if status is None or not 200 <= status < 300 or not isinstance(payload, dict):
+        return None
+    text = "".join(block.get("text", "") for block in payload.get("content") or [] if isinstance(block, dict))
+    match = re.search(r"\{.*\}", text, re.S)
+    try:
+        answer = json.loads(match.group(0)) if match else {}
+    except ValueError:
+        return None
+    chosen = next((c for c in shortlist if str(c["tmdbId"]) == str(answer.get("tmdbId"))), None)
+    reason = str(answer.get("reason") or "").strip()
+    if chosen is None or not reason:
+        logger.info(f"[movie-recommend] AI answered off-list or empty: {text[:120]!r}")
+        return None
+    return chosen, reason[:200]
+
+
 async def _card(c: dict) -> dict:
     """What the bot shows: the candidate plus the overview, runtime and cast from TMDB."""
     status, body = await tmdb_get(f"/movie/{c['tmdbId']}", {"language": language(), "append_to_response": "credits,external_ids"})
@@ -782,14 +876,18 @@ async def pick(db: AsyncSession, row: MovieSubscriberModel, filters: dict, skip_
         if mode == "bridge" and len(candidates) < CONFIG["bridgeMinPoolSize"]:
             continue
         tried: set[int] = set()
+        ai = await _ai_choice(db, row, mode, candidates, pools, filters)
         while candidates and len(tried) < 8:
-            chosen = _softmax_pick(candidates, CONFIG["temperature"], rng)
+            if ai and ai[0]["tmdbId"] not in tried:
+                chosen, ai_reason = ai
+            else:
+                chosen, ai_reason = _softmax_pick(candidates, CONFIG["temperature"], rng), None
             tried.add(chosen["tmdbId"])
             card = await _card(chosen)
             if filters.get("maxRuntime") and card["runtime"] and card["runtime"] > filters["maxRuntime"]:
                 candidates = [c for c in candidates if c["tmdbId"] != chosen["tmdbId"]]
                 continue
-            reason = _reason(chosen, mode, pools, pools["mean"])
+            reason = ai_reason or _reason(chosen, mode, pools, pools["mean"])
             pick_row = MoviePickModel(
                 profile_id=row.profile_id, tmdb_id=chosen["tmdbId"], mode=mode, day=today, shown_at=_now().replace(tzinfo=None), title=card["title"] or str(chosen["tmdbId"]), reason=reason, data=card
             )
@@ -800,7 +898,7 @@ async def pick(db: AsyncSession, row: MovieSubscriberModel, filters: dict, skip_
                 f"[movie-recommend] Pick for {row.profile_id}: {mode} → {card['title']} ({chosen['tmdbId']}) in {time.monotonic() - started:.1f}s"
                 f"{' (cold start)' if cold else ''}, filters {filters}, {DAILY_PICKS - used - 1} left today"
             )
-            return {**card, "pickId": pick_row.pick_id, "mode": mode, "reason": reason, "cold": cold, "remainingToday": DAILY_PICKS - used - 1}
+            return {**card, "pickId": pick_row.pick_id, "mode": mode, "reason": reason, "ai": bool(ai_reason), "cold": cold, "remainingToday": DAILY_PICKS - used - 1}
     await _report(row.profile_id, None)
     logger.info(f"[movie-recommend] Nothing to pick for {row.profile_id} with filters {filters}")
     raise NothingToPick()
