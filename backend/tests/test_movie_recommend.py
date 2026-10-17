@@ -42,6 +42,7 @@ class FakeWorld:
 
     def __init__(self, unrated: bool = False) -> None:
         self.writes: list[tuple[str, dict]] = []
+        self.last_history: int | None = None
         # 12 watched films (past the cold start), comedy / drama lovers who rate high.
         self.watched = [{"plays": 1 if i < 11 else 3, "last_watched_at": "2026-01-01T00:00:00.000Z", "movie": _movie(i)} for i in range(1, 13)]
         # With `unrated`, films 11 and 12 were watched but never rated: 补评分 material.
@@ -58,7 +59,11 @@ class FakeWorld:
     async def trakt(self, method: str, path: str, token: str, params=None, json=None):
         if method == "POST":
             self.writes.append((path, json))
+            if path == "/sync/history":
+                self.last_history = json["movies"][0]["ids"]["tmdb"]
             return 201, {"added": {"movies": 1}}
+        if path.startswith("/sync/history/movies"):
+            return 200, [{"id": 555, "watched_at": "2026-10-18T00:00:00.000Z", "movie": _movie(self.last_history)}] if self.last_history else []
         if path == "/sync/last_activities":
             return 200, {"movies": {"watched_at": "2026-01-01T00:00:00Z", "rated_at": None, "watchlisted_at": None, "hidden_at": None}}
         page = (params or {}).get("page", 1)
@@ -189,9 +194,17 @@ async def check_recommend_flow():
             unrated = (await client.post(f"/internal/movies/picks/{uid}/{third['pickId']}/watched", headers=bot, json={})).json()["data"]
             assert unrated["rated"] is False and len(world.writes) == 1
             rated = (await client.post(f"/internal/movies/picks/{uid}/{third['pickId']}/watched", headers=bot, json={"rating": 8})).json()["data"]
-            assert rated["rated"] is True and rated["rating"] == 8
+            assert rated["rated"] is True and rated["rating"] == 8 and rated["own"] is True
             assert [w[0] for w in world.writes[-2:]] == ["/sync/ratings", "/sync/history"]
             assert world.writes[-2][1]["movies"][0]["rating"] == 8
+            # Rating it gave the pick back; removing the rating takes it back again (and the play).
+            assert rated["refunded"] is True and rated["remainingToday"] == 1
+            undone = (await client.post(f"/internal/movies/picks/{uid}/{third['pickId']}/unrate", headers=bot)).json()["data"]
+            assert undone["remainingToday"] == 0
+            assert [w[0] for w in world.writes[-2:]] == ["/sync/ratings/remove", "/sync/history/remove"]
+            assert world.writes[-1][1] == {"ids": [555]}
+            # Only ratings written here can be removed.
+            assert (await client.post(f"/internal/movies/picks/{uid}/{third['pickId']}/unrate", headers=bot)).status_code == 404
             # Unknown pick.
             assert (await client.post(f"/internal/movies/picks/{uid}/nope/watchlist", headers=bot)).status_code == 404
 
@@ -248,6 +261,27 @@ async def check_backfill():
             assert result["refunded"] is True and result["action"] == "rated" and result["remainingToday"] == recommend.DAILY_PICKS
             assert [w[0] for w in world.writes] == ["/sync/ratings"]
             assert await recommend.picks_today(db, "p1") == 0
+            # Refunds are capped per day: a fourth rated pick still counts.
+            for n in range(1, 5):
+                extra = MoviePickModel(
+                    profile_id="p1",
+                    tmdb_id=100 + n,
+                    mode="backfill",
+                    day=recommend.today_taipei().isoformat(),
+                    title=f"F{n}",
+                    reason="r",
+                    data={},
+                    action="rated",
+                    rating=6,
+                    own_rating=True,
+                    acted_at=service.utcnow() + timedelta(seconds=n),
+                )
+                db.add(extra)
+            await db.flush()
+            assert await recommend.picks_today(db, "p1") == 2
+            # A bigger quota for a test account.
+            row.pick_quota = 1000
+            assert recommend.quota_for(row) == 1000
 
 
 def test_blind_spots_follow_base_rates():

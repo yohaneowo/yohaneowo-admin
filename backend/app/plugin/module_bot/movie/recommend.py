@@ -53,9 +53,17 @@ DISCOVER_MAX_AGE = timedelta(days=7)
 POSTER_BASE = "https://image.tmdb.org/t/p/w780"
 TMDB_GENRE_ANIMATION = 16
 
-# Three picks a day (the first plus two "换一部"), none repeated within a month.
+# Three picks a day (the first plus two "换一部"), none repeated within a month. A pick whose film
+# the person then rates through the bot is given back, at most REFUNDS_A_DAY times a day. The day
+# is the Taipei calendar day, so everyone's count resets at midnight Taipei time.
 DAILY_PICKS = 3
+REFUNDS_A_DAY = 3
 NO_REPEAT_DAYS = 30
+
+
+def quota_for(row: MovieSubscriberModel) -> int:
+    return row.pick_quota if is_integer(row.pick_quota) and row.pick_quota > 0 else DAILY_PICKS
+
 
 CONFIG: dict[str, Any] = {
     "defaultMeanRating": 7.0,
@@ -759,9 +767,16 @@ def _mode_weights(picks: list[MoviePickModel], modes: tuple[str, ...] = MODES) -
     return {m: w / total for m, w in weights.items()}
 
 
-def _counts_today(pick: MoviePickModel, today: str) -> bool:
-    """A 补评分 pick that got its rating is refunded: it no longer uses up the day's quota."""
-    return pick.day == today and not (pick.mode == BACKFILL and pick.action == "rated")
+def _refunded_ids(picks: list[MoviePickModel], today: str) -> set[str]:
+    """The day's picks given back: films rated through the bot (看过了 or 补评分), oldest first, up
+    to REFUNDS_A_DAY. A removed rating takes the refund back by clearing own_rating."""
+    rated = sorted((p for p in picks if p.day == today and p.own_rating and p.action in ("watched", "rated")), key=lambda p: (p.acted_at or p.shown_at))
+    return {p.pick_id for p in rated[:REFUNDS_A_DAY]}
+
+
+def used_today(picks: list[MoviePickModel], today: str) -> int:
+    refunded = _refunded_ids(picks, today)
+    return sum(1 for p in picks if p.day == today and p.pick_id not in refunded)
 
 
 def _matches(c: dict, filters: dict) -> bool:
@@ -919,8 +934,9 @@ async def pick(db: AsyncSession, row: MovieSubscriberModel, filters: dict, skip_
         for previous in recent:
             if previous.pick_id == skip_pick_id and previous.action is None:
                 previous.action = "skip"
-    used = sum(1 for p in recent if _counts_today(p, today))
-    if used >= DAILY_PICKS:
+    quota = quota_for(row)
+    used = used_today(recent, today)
+    if used >= quota:
         raise DailyLimit(next_midnight_taipei())
     recent_ids = {p.tmdb_id for p in recent}
     try:
@@ -961,9 +977,9 @@ async def pick(db: AsyncSession, row: MovieSubscriberModel, filters: dict, skip_
             await _report(row.profile_id, None)
             logger.info(
                 f"[movie-recommend] Pick for {row.profile_id}: {mode} → {card['title']} ({chosen['tmdbId']}) in {time.monotonic() - started:.1f}s"
-                f"{' (cold start)' if cold else ''}, filters {filters}, {DAILY_PICKS - used - 1} left today"
+                f"{' (cold start)' if cold else ''}, filters {filters}, {quota - used - 1} left today"
             )
-            return {**card, "pickId": pick_row.pick_id, "mode": mode, "reason": reason, "ai": bool(ai_reason), "cold": cold, "remainingToday": DAILY_PICKS - used - 1}
+            return {**card, "pickId": pick_row.pick_id, "mode": mode, "reason": reason, "ai": bool(ai_reason), "cold": cold, "remainingToday": quota - used - 1}
     await _report(row.profile_id, None)
     logger.info(f"[movie-recommend] Nothing to pick for {row.profile_id} with filters {filters}")
     raise NothingToPick()
@@ -1000,12 +1016,40 @@ async def want(db: AsyncSession, row: MovieSubscriberModel, pick_id: str) -> dic
     return {"pickId": pick_id, "action": "watchlist", "added": ((body or {}).get("added") or {}).get("movies", 0) if isinstance(body, dict) else None}
 
 
+async def _newest_play_id(token: str, trakt_id: int | None, tmdb_id: int) -> int | None:
+    """The id of the play 看过了 just added (Trakt's newest history item for the film)."""
+    path = f"/sync/history/movies/{trakt_id}" if trakt_id else "/sync/history/movies"
+    status, body = await _trakt("GET", path, token, {"limit": 20, "page": 1})
+    if status != 200 or not isinstance(body, list):
+        return None
+    for entry in body:
+        if _tmdb_id(entry.get("movie")) == tmdb_id and is_integer(entry.get("id")):
+            return int(entry["id"])
+    return None
+
+
+async def _trakt_id_of(token: str, tmdb_id: int) -> int | None:
+    status, _, found = await trakt_get(f"/search/tmdb/{tmdb_id}", {"type": "movie"})
+    if status == 200 and isinstance(found, list) and found:
+        value = ((found[0].get("movie") or {}).get("ids") or {}).get("trakt")
+        return int(value) if is_integer(value) else None
+    return None
+
+
+async def _remaining(db: AsyncSession, row: MovieSubscriberModel) -> int:
+    return max(0, quota_for(row) - await picks_today(db, row.profile_id))
+
+
 async def watched(db: AsyncSession, row: MovieSubscriberModel, pick_id: str, rating: int | None) -> dict:
-    """看过了: with the person's rating (given now, or already on Trakt) the film is marked watched
-    and rated on Trakt. Without one, nothing is written and `rated` is False so the bot can ask."""
+    """看过了 / 补评分. With a rating from the person it is written to Trakt (plus one play for 看过了,
+    remembered so it can be undone) and the pick is refunded. Without one: a rating already on
+    Trakt marks the film watched with no refund (nothing new was contributed); otherwise nothing is
+    written and `rated` is False so the bot asks for one."""
     token = await _token_for(row)
     found = await _pick_row(db, row, pick_id)
-    existing = None
+    backfill = found.mode == BACKFILL
+    movie = {"ids": {"tmdb": found.tmdb_id}}
+    now = _now().strftime("%Y-%m-%dT%H:%M:%S.000Z")
     if rating is None:
         status, body = await _trakt("GET", "/sync/ratings/movies", token, {"limit": 100, "page": 1})
         # The rating, if the film was rated recently; older ones come from the cached profile.
@@ -1016,25 +1060,35 @@ async def watched(db: AsyncSession, row: MovieSubscriberModel, pick_id: str, rat
                 if _tmdb_id(entry.get("movie")) == found.tmdb_id and is_number(entry.get("rating")):
                     existing = entry["rating"]
         if existing is None:
-            return {"pickId": pick_id, "action": None, "rated": False}
-    value = rating if rating is not None else int(existing)
-    now = _now().strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    movie = {"ids": {"tmdb": found.tmdb_id}}
-    if rating is not None:
-        status, _ = await _trakt("POST", "/sync/ratings", token, json={"movies": [{**movie, "rating": value, "rated_at": now}]})
-        if status not in (200, 201):
-            raise SourceUnavailable(f"Trakt 暂时无法写入评分（HTTP {status}）")
-    backfill = found.mode == BACKFILL
-    # Already marked watched (a 补评分 pick, or the person is changing their rating): no second play.
-    if found.action not in ("watched", "rated") and not backfill:
+            return {"pickId": pick_id, "title": found.title, "action": found.action, "rated": False}
+        # Their own earlier rating: mark watched, nothing refunded, nothing to undo here.
+        if found.action is None and not backfill:
+            status, _ = await _trakt("POST", "/sync/history", token, json={"movies": [{**movie, "watched_at": now}]})
+            if status not in (200, 201):
+                raise SourceUnavailable(f"Trakt 暂时无法标记看过（HTTP {status}）")
+        found.action = "watched_existing"
+        found.rating = int(existing)
+        found.own_rating = False
+        found.acted_at = _now().replace(tzinfo=None)
+        await db.flush()
+        await _drop_from_pool(row.profile_id, found.tmdb_id)
+        logger.info(f"[movie-recommend] 看过了 for {row.profile_id}: {found.title} ({found.tmdb_id}) already rated {existing}")
+        return {"pickId": pick_id, "title": found.title, "action": found.action, "rated": True, "rating": int(existing), "own": False, "refunded": False, "remainingToday": await _remaining(db, row)}
+    changing = found.own_rating and found.action in ("watched", "rated")
+    status, _ = await _trakt("POST", "/sync/ratings", token, json={"movies": [{**movie, "rating": rating, "rated_at": now}]})
+    if status not in (200, 201):
+        raise SourceUnavailable(f"Trakt 暂时无法写入评分（HTTP {status}）")
+    if not backfill and not changing and found.history_id is None:
         status, _ = await _trakt("POST", "/sync/history", token, json={"movies": [{**movie, "watched_at": now}]})
         if status not in (200, 201):
             raise SourceUnavailable(f"Trakt 暂时无法标记看过（HTTP {status}）")
-    changed = found.action in ("watched", "rated")
-    logger.info(f"[movie-recommend] {'补评分' if backfill else '看过了'} for {row.profile_id}: {found.title} ({found.tmdb_id}) rating {value}{' (changed)' if changed else ''}")
-    # A rated 补评分 pick is refunded (see _counts_today).
+        try:
+            found.history_id = await _newest_play_id(token, await _trakt_id_of(token, found.tmdb_id), found.tmdb_id)
+        except SourceUnavailable:
+            found.history_id = None
     found.action = "rated" if backfill else "watched"
-    found.rating = value
+    found.rating = rating
+    found.own_rating = True
     found.acted_at = _now().replace(tzinfo=None)
     await db.flush()
     await _drop_from_pool(row.profile_id, found.tmdb_id)
@@ -1043,15 +1097,48 @@ async def watched(db: AsyncSession, row: MovieSubscriberModel, pick_id: str, rat
         locked = await service.by_id(session, row.profile_id, lock=True)
         if locked:
             locked.sync_requested = True
-    remaining = max(0, DAILY_PICKS - await picks_today(db, row.profile_id))
-    return {"pickId": pick_id, "action": found.action, "rated": True, "rating": value, "refunded": backfill and not changed, "remainingToday": remaining}
+    picks = await _recent_picks(db, row.profile_id)
+    refunded = found.pick_id in _refunded_ids(picks, found.day) and not changing
+    logger.info(
+        f"[movie-recommend] {'补评分' if backfill else '看过了'} for {row.profile_id}: {found.title} ({found.tmdb_id}) rating {rating}{' (changed)' if changing else ''}{' (refunded)' if refunded else ''}"
+    )
+    return {"pickId": pick_id, "title": found.title, "action": found.action, "rated": True, "rating": rating, "own": True, "refunded": refunded, "remainingToday": await _remaining(db, row)}
+
+
+async def unrate(db: AsyncSession, row: MovieSubscriberModel, pick_id: str) -> dict:
+    """删除评分: takes back a rating written through this pick (and the play 看过了 added), and
+    with it the refund. Only ratings the bot wrote can be removed here."""
+    token = await _token_for(row)
+    found = await _pick_row(db, row, pick_id)
+    if not found.own_rating or found.rating is None:
+        raise LookupError(pick_id)
+    movie = {"ids": {"tmdb": found.tmdb_id}}
+    status, _ = await _trakt("POST", "/sync/ratings/remove", token, json={"movies": [movie]})
+    if status not in (200, 201):
+        raise SourceUnavailable(f"Trakt 暂时无法删除评分（HTTP {status}）")
+    if found.history_id is not None:
+        status, _ = await _trakt("POST", "/sync/history/remove", token, json={"ids": [found.history_id]})
+        if status not in (200, 201):
+            logger.warning(f"[movie-recommend] history {found.history_id} not removed for {row.profile_id}: HTTP {status}")
+    logger.info(f"[movie-recommend] 删除评分 for {row.profile_id}: {found.title} ({found.tmdb_id}) rating {found.rating} removed{' with its play' if found.history_id is not None else ''}")
+    found.action = None
+    found.rating = None
+    found.own_rating = False
+    found.history_id = None
+    found.acted_at = _now().replace(tzinfo=None)
+    await db.flush()
+    async with async_db_session() as session, session.begin():
+        locked = await service.by_id(session, row.profile_id, lock=True)
+        if locked:
+            locked.sync_requested = True
+    return {"pickId": pick_id, "title": found.title, "action": None, "remainingToday": await _remaining(db, row)}
 
 
 async def picks_today(db: AsyncSession, profile_id: str) -> int:
-    """Today's picks that count against the quota (rated 补评分 picks are refunded)."""
+    """Today's picks that count against the quota (refunded ones don't)."""
     today = today_taipei().isoformat()
-    rows = await db.scalars(select(MoviePickModel).where(MoviePickModel.profile_id == profile_id, MoviePickModel.day == today))
-    return sum(1 for p in rows if _counts_today(p, today))
+    rows = list(await db.scalars(select(MoviePickModel).where(MoviePickModel.profile_id == profile_id, MoviePickModel.day == today)))
+    return used_today(rows, today)
 
 
 def pick_out(row: MoviePickModel) -> dict:
@@ -1065,8 +1152,9 @@ def pick_out(row: MoviePickModel) -> dict:
         "reason": row.reason,
         "action": row.action,
         "rating": row.rating,
+        "ownRating": bool(row.own_rating),
         "shownAt": row.shown_at.isoformat() if row.shown_at else None,
     }
 
 
-__all__ = ["DailyLimit", "NothingToPick", "TraktRequired", "pick", "want", "watched", "picks_today", "pick_out", "logger"]
+__all__ = ["DailyLimit", "NothingToPick", "TraktRequired", "pick", "want", "watched", "unrate", "picks_today", "pick_out", "quota_for", "logger"]

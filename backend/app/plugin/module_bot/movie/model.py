@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Index, Integer, String, Text
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base_model import MappedBase
@@ -35,6 +35,8 @@ class MovieSubscriberModel(MappedBase):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     # Daily recommendations by Discord DM (the bot's /movie subscribe); needs discord_id.
     recommendations: Mapped[bool] = mapped_column(Boolean, default=False)
+    # /movie recommend picks a day for this profile instead of the default (test accounts).
+    pick_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
     revision: Mapped[str] = mapped_column(String(36))
     snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Copied from the snapshot so the platform-wide rank is one indexed count, not a JSON scan.
@@ -80,9 +82,14 @@ class MoviePickModel(MappedBase):
     shown_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
     title: Mapped[str] = mapped_column(String(500))
     reason: Mapped[str] = mapped_column(String(500))
-    # watchlist / watched / skip, None while the person has not answered.
+    # watchlist / watched / watched_existing / rated / skip, None while the person has not answered
+    # (or took their rating back).
     action: Mapped[str | None] = mapped_column(String(16), nullable=True)
     rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The rating was written through this pick (so it may be removed again and refunds the pick);
+    # history_id is the Trakt play 看过了 added, removed together with the rating.
+    own_rating: Mapped[bool] = mapped_column(Boolean, default=False)
+    history_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     acted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # The card the bot showed (title, overview, poster…), so /movie status can list it.
     data: Mapped[dict] = mapped_column(JSON)

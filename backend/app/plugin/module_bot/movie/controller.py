@@ -101,7 +101,8 @@ async def list_picks(discord_id: DiscordId, db: Db):
     recent = await recommend._recent_picks(db, row.profile_id)  # noqa: SLF001
     return SuccessResponse(
         data={
-            "remainingToday": max(0, recommend.DAILY_PICKS - await recommend.picks_today(db, row.profile_id)),
+            "remainingToday": max(0, recommend.quota_for(row) - await recommend.picks_today(db, row.profile_id)),
+            "quota": recommend.quota_for(row),
             "traktConnected": service.tokens_of(row) is not None and not row.trakt_reauth,
             "picks": [recommend.pick_out(p) for p in sorted(recent, key=lambda p: p.shown_at or service.utcnow(), reverse=True)],
         }
@@ -129,6 +130,16 @@ async def post_pick_watched(discord_id: DiscordId, pick_id: Annotated[str, Field
     row = await _bot_profile(db, discord_id)
     try:
         return SuccessResponse(data=await recommend.watched(db, row, pick_id, data.rating))
+    except (recommend.TraktRequired, LookupError, SourceUnavailable, TraktTokenError) as error:
+        raise _pick_errors(error) from error
+
+
+@MovieInternalRouter.post("/picks/{discord_id}/{pick_id}/unrate")
+async def post_pick_unrate(discord_id: DiscordId, pick_id: Annotated[str, Field(max_length=36)], db: Db):
+    """删除评分: remove a rating (and the play) this pick wrote to Trakt; the refund goes back."""
+    row = await _bot_profile(db, discord_id)
+    try:
+        return SuccessResponse(data=await recommend.unrate(db, row, pick_id))
     except (recommend.TraktRequired, LookupError, SourceUnavailable, TraktTokenError) as error:
         raise _pick_errors(error) from error
 
