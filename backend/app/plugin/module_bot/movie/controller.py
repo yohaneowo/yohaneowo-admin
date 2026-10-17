@@ -164,7 +164,8 @@ async def website_statistics(site_user_id: SiteUserId, db: Db, discordId: Discor
 @MovieWebsiteRouter.get("/trakt/authorize")
 async def trakt_authorize(
     redirectUri: Annotated[str, Query(max_length=500, pattern=r"^https?://")],
-    state: Annotated[str, Query(max_length=200)],
+    # The website's signed state (base64 JSON + HMAC) runs well past 200 characters.
+    state: Annotated[str, Query(max_length=1000)],
     codeChallenge: Annotated[str, Query(min_length=43, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")],
 ):
     """Where to send the browser to authorize this app on Trakt (the client id lives here); the
