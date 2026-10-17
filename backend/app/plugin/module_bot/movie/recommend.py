@@ -35,7 +35,7 @@ from . import service
 from .model import MoviePickModel, MovieSubscriberModel
 from .sources import trakt
 from .sources.base import SourceUnavailable
-from .sync.common import is_integer, is_number, read_cache, tmdb_get, write_cache
+from .sync.common import is_integer, is_number, read_cache, tmdb_get, trakt_get, write_cache
 from .sync.history import TraktTokenError
 from .sync.taste import language, load_details
 
@@ -831,7 +831,17 @@ async def _card(c: dict) -> dict:
     body = body if status == 200 and isinstance(body, dict) else {}
     cast = [p.get("name") for p in ((body.get("credits") or {}).get("cast") or [])[:3] if p.get("name")]
     poster = body.get("poster_path")
+    # Trakt's web pages go by slug; the old /search/tmdb/<id> URL form is gone.
+    slug = None
+    try:
+        status, _, found = await trakt_get(f"/search/tmdb/{c['tmdbId']}", {"type": "movie"})
+        if status == 200 and isinstance(found, list) and found:
+            slug = ((found[0].get("movie") or {}).get("ids") or {}).get("slug")
+    except SourceUnavailable:
+        slug = None
     return {
+        "traktSlug": slug,
+        "traktUrl": f"https://trakt.tv/movies/{slug}" if slug else None,
         "tmdbId": c["tmdbId"],
         "title": body.get("title") or c.get("title"),
         "originalTitle": body.get("original_title"),

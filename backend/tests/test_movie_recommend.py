@@ -146,6 +146,7 @@ async def check_recommend_flow():
         patch("app.utils.crypto_util.CryptoUtil.decrypt", side_effect=lambda value: value.removeprefix("enc:")),
         patch.object(recommend, "_trakt", world.trakt),
         patch.object(recommend, "tmdb_get", world.tmdb),
+        patch.object(recommend, "trakt_get", AsyncMock(return_value=(200, 0, [{"movie": {"ids": {"slug": "film-slug"}}}]))),
         patch.object(recommend, "load_details", world.load_details),
         patch.object(recommend, "read_cache", read_cache),
         patch.object(recommend, "write_cache", write_cache),
@@ -166,6 +167,7 @@ async def check_recommend_flow():
             assert first["pickId"] and first["mode"] in recommend.MODES and first["reason"] and first["remainingToday"] == 2
             assert first["tmdbId"] not in range(1, 13)
             assert first["overview"] == "An overview." and first["runtime"] == 120
+            assert first["traktUrl"] == "https://trakt.tv/movies/film-slug"
 
             # 换一部 marks the previous pick as skipped; three picks a day.
             second = (await client.post(f"/internal/movies/picks/{uid}", headers=bot, json={"skip": first["pickId"]})).json()["data"]
