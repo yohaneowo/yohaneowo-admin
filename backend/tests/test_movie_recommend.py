@@ -40,12 +40,12 @@ def _details(tmdb_id: int, genres: list[tuple[int, str]], year: int = 2015, vote
 class FakeWorld:
     """Trakt and TMDB as the recommender sees them, plus a log of every write."""
 
-    def __init__(self) -> None:
+    def __init__(self, unrated: bool = False) -> None:
         self.writes: list[tuple[str, dict]] = []
         # 12 watched films (past the cold start), comedy / drama lovers who rate high.
         self.watched = [{"plays": 1 if i < 11 else 3, "last_watched_at": "2026-01-01T00:00:00.000Z", "movie": _movie(i)} for i in range(1, 13)]
-        # Films 11 and 12 were watched but never rated: 补评分 material.
-        self.ratings = [{"rating": 9 if i % 2 else 8, "rated_at": "2026-01-01T00:00:00.000Z", "movie": _movie(i)} for i in range(1, 11)]
+        # With `unrated`, films 11 and 12 were watched but never rated: 补评分 material.
+        self.ratings = [{"rating": 9 if i % 2 else 8, "rated_at": "2026-01-01T00:00:00.000Z", "movie": _movie(i)} for i in range(1, 11 if unrated else 13)]
         self.details = {i: _details(i, [(35, "喜剧"), (18, "剧情")]) for i in range(1, 13)}
         # Candidates: comedies from Trakt's recommendations and one related title.
         for i in range(101, 109):
@@ -206,7 +206,7 @@ async def check_backfill():
         for model in (MovieSubscriberModel, MovieRecordModel, MovieCacheModel, MoviePickModel):
             await conn.run_sync(model.__table__.create)
     factory = async_sessionmaker(engine, expire_on_commit=False)
-    world = FakeWorld()
+    world = FakeWorld(unrated=True)
     cache: dict[tuple[str, str], dict] = {}
 
     async def read_cache(namespace, keys):
