@@ -103,7 +103,7 @@ def test_enrich_fills_scores_staff_and_favourites():
         store.update({(namespace, k): v for k, v in items.items()})
 
     entries = {(1, 1): _entry(101, 201, 301, 8.0), (1, 2): _entry(102, 202, 302, 9.0), (2, 1): _entry(103, 203, 303, 7.0)}
-    match = AsyncMock(side_effect=lambda item, season, previous: entries[(item["id"], season["number"])])
+    match = AsyncMock(side_effect=lambda item, season, previous, current=None, bangumi_ok=True: (entries[(item["id"], season["number"])], False))
     mal_score = AsyncMock(side_effect=lambda db, mal_id: {"score": mal_id / 25, "votes": 5})
 
     class Session:
@@ -151,7 +151,7 @@ def test_enrich_reports_leftovers_but_not_outages():
     with (
         patch.object(anime, "read_cache", read_cache),
         patch.object(anime, "write_cache", write_cache),
-        patch.object(anime, "match_season", AsyncMock(return_value=_entry(1, None, 2, 7.0))),
+        patch.object(anime, "match_season", AsyncMock(return_value=(_entry(1, None, 2, 7.0), False))),
     ):
         # Out of time: more to do at the next sync.
         assert asyncio.run(anime.enrich_anime(_section(), budget_seconds=-1)) is True
