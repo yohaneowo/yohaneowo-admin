@@ -1,9 +1,9 @@
-"""The sync loop: claim a due subscription, rebuild its snapshot and taste, store them.
+"""The sync loop: claim a due profile, rebuild its snapshot and taste, store them.
 
 Replaces the bot's standalone movie worker. The loop starts the first time a movie route is used
 (ensure_loop is a dependency of those routers), like the other plugins' background work, so the
 framework's startup stays untouched; the bot and the website call these routes all the time.
-With several uvicorn workers each runs a loop; the claim lease keeps one sync per subscription.
+With several uvicorn workers each runs a loop; the claim lease keeps one sync per profile.
 """
 
 import asyncio
@@ -13,8 +13,10 @@ from app.core.logger import logger
 
 from .. import service
 from ..schema import Snapshot
+from ..sources import trakt
+from ..sources.base import SourceUnavailable
 from .anime import enrich_anime
-from .history import fetch_user_movies
+from .history import TraktTokenError, fetch_user_movies
 from .shows import build_show_section
 from .statistics import build_statistics, load_profile_extras
 from .taste import build_taste, taste_json
@@ -25,10 +27,10 @@ _task: asyncio.Task | None = None
 _wake = asyncio.Event()
 
 
-async def compute(trakt_user: str) -> tuple[dict, dict, bool]:
+async def compute(trakt_user: str, token: str | None = None) -> tuple[dict, dict, bool]:
     """(snapshot, taste, more): computed without storing anything; more = anime lookups were left
-    for another sync."""
-    history = await fetch_user_movies(trakt_user)
+    for another sync. `token` is the profile owner's Trakt token (reads private accounts)."""
+    history = await fetch_user_movies(trakt_user, token)
     taste, details = await build_taste(history)
     movies = sum(1 for item in taste["historyItems"] if item["type"] == "movie")
     if taste["knownCount"] < movies:
@@ -44,20 +46,46 @@ async def compute(trakt_user: str) -> tuple[dict, dict, bool]:
     return snapshot, taste_json(taste, details), more
 
 
+async def _token_for(profile_id: str) -> str | None:
+    """The profile's Trakt access token, refreshed first when it is about to expire. None when the
+    profile has no tokens (a public account read as the app). Raises TraktTokenError when the
+    refresh is rejected, so the sync marks the profile as needing a new authorization."""
+    async with async_db_session() as db, db.begin():
+        row = await service.by_id(db, profile_id, lock=True)
+        if row is None:
+            return None
+        tokens = service.tokens_of(row)
+        if tokens is None:
+            return None
+        if not trakt.expiring(tokens):
+            return tokens.access_token
+        try:
+            fresh = await trakt.refresh(db, tokens.refresh_token, row.trakt_redirect_uri or "")
+        except trakt.TraktAuthError as error:
+            raise TraktTokenError(str(error)) from error
+        service.store_tokens(row, fresh, row.trakt_redirect_uri)
+        return fresh.access_token
+
+
 async def run_once() -> bool:
-    """Sync one due subscription. False when nothing was due."""
+    """Sync one due profile. False when nothing was due."""
     async with async_db_session() as db, db.begin():
         job = await service.claim(db)
     if job is None:
         return False
     snapshot = taste = None
     more = False
+    reauth = False
     try:
-        snapshot, taste, more = await compute(job["traktUser"])
-    except Exception as error:  # noqa: BLE001 - any failure keeps the previous snapshot and retries later
+        token = await _token_for(job["profileId"])
+        snapshot, taste, more = await compute(job["traktUser"], token)
+    except TraktTokenError as error:
+        reauth = True
+        logger.warning(f"[movie-sync] Trakt token rejected for {job['profileId']}: {error}")
+    except (SourceUnavailable, Exception) as error:  # noqa: BLE001 - any failure keeps the previous snapshot and retries later
         logger.warning(f"[movie-sync] Sync failed for {job['profileId']}: {error}")
     async with async_db_session() as db, db.begin():
-        stored = await service.finish_sync(db, job["profileId"], job["revision"], job["leaseId"], snapshot, taste, again=more)
+        stored = await service.finish_sync(db, job["profileId"], job["revision"], job["leaseId"], snapshot, taste, again=more, reauth=reauth)
     if snapshot is not None and stored:
         logger.info(f"[movie-sync] Statistics snapshot saved for {job['profileId']}.")
     return True

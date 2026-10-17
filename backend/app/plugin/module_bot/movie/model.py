@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base_model import MappedBase
@@ -17,8 +17,19 @@ class MovieSubscriberModel(MappedBase):
     profile_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     discord_id: Mapped[str | None] = mapped_column(String(32), nullable=True, unique=True)
     site_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
-    trakt_user: Mapped[str] = mapped_column(String(255))
+    # Trakt profile slug; one profile per Trakt account.
+    trakt_user: Mapped[str] = mapped_column(String(255), unique=True)
     trakt_name: Mapped[str] = mapped_column(String(255))
+    trakt_avatar: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    trakt_private: Mapped[bool] = mapped_column(Boolean, default=False)
+    # OAuth tokens (Fernet-encrypted, app/utils/crypto_util.py) from the website's "connect Trakt";
+    # they let the sync read private accounts. trakt_reauth: the refresh failed, the person must
+    # authorize again before the next sync can run.
+    trakt_access_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trakt_refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trakt_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    trakt_redirect_uri: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    trakt_reauth: Mapped[bool] = mapped_column(Boolean, default=False)
     region: Mapped[str] = mapped_column(String(2))
     subscribed_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
     active: Mapped[bool] = mapped_column(Boolean, default=True)

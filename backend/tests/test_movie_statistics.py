@@ -1,6 +1,7 @@
 """Movie API authorization, snapshot leases and migration safety on isolated SQLite."""
 
 import asyncio
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -14,6 +15,7 @@ from app.plugin.module_bot.movie import service
 from app.plugin.module_bot.movie.controller import MovieInternalRouter, MovieWebsiteRouter
 from app.plugin.module_bot.movie.model import MovieCacheModel, MovieRecordModel, MovieSubscriberModel
 from app.plugin.module_bot.movie.sources import base, omdb, tmdb
+from app.plugin.module_bot.movie.sources.trakt import TraktTokens
 from app.plugin.module_bot.movie.sync import job as sync_job
 from app.plugin.module_external.model import ExternalApiProviderModel, ExternalApiUsageModel
 
@@ -49,17 +51,25 @@ async def check_lifecycle():
     with (
         patch("app.plugin.module_bot.internal_auth.get_bot_settings", return_value=SimpleNamespace(BOT_API_TOKEN="test-bot")),
         patch("app.plugin.module_bot.movie.auth.site_token", return_value="test-site"),
-        patch("app.plugin.module_bot.movie.sources.trakt.resolve_user", AsyncMock(return_value=("test-user", "Test"))),
+        patch("app.plugin.module_bot.movie.sources.trakt.exchange_code", AsyncMock(return_value=TraktTokens("access", "refresh", service.utcnow() + timedelta(days=90)))),
+        patch(
+            "app.plugin.module_bot.movie.sources.trakt.me",
+            AsyncMock(return_value={"username": "Test", "private": False, "ids": {"slug": "test-user"}, "images": {"avatar": {"full": "https://example.com/a.jpg"}}}),
+        ),
+        patch("app.utils.crypto_util.CryptoUtil.encrypt", side_effect=lambda value: f"enc:{value}"),
+        patch("app.utils.crypto_util.CryptoUtil.decrypt", side_effect=lambda value: value.removeprefix("enc:")),
     ):
+        connect = {"code": "oauth-code", "redirectUri": "https://site.test/api/trakt/callback", "region": "TW"}
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             assert (await client.get(me)).status_code == 401
             assert (await client.put(sub, headers=site)).status_code == 401
             assert (await client.get(me, headers=site)).json()["data"]["subscription"] is None
             # The bot can't subscribe a Discord user who has no profile yet.
             assert (await client.put(sub, headers=bot)).status_code == 404
-            # The website creates the profile (Trakt details resolved by admin), without Discord.
-            created = (await client.put(me, headers=site, json={"trakt": "https://trakt.tv/users/test-user", "region": "TW"})).json()["data"]["subscription"]
+            # The website connects a Trakt account through OAuth, without Discord.
+            created = (await client.post(me + "/trakt", headers=site, json=connect)).json()["data"]["subscription"]
             assert created["traktUser"] == "test-user" and created["userId"] is None and created["recommendations"] is False
+            assert created["traktConnected"] is True and created["traktAvatar"] == "https://example.com/a.jpg"
             assert (await client.get(sub, headers=bot)).json()["data"] is None
             # Linking Discord on the website attaches it; then the bot can turn recommendations on.
             attached = (await client.get(me, headers=site, params=linked)).json()["data"]["subscription"]
@@ -110,9 +120,11 @@ async def check_lifecycle():
             assert (await client.get(sub, headers=bot)).json()["data"] is None
             assert (await client.get(me, headers=site)).json()["data"]["snapshot"] == stored
             # A new Trakt account starts the statistics over, so the old revision is rejected.
-            with patch("app.plugin.module_bot.movie.sources.trakt.resolve_user", AsyncMock(return_value=("other-user", "Other"))):
-                changed = (await client.put(me, headers=site, json={"trakt": "other-user", "region": "JP"})).json()["data"]["subscription"]
-            assert changed["revision"] != job["revision"] and changed["userId"] == uid
+            with patch("app.plugin.module_bot.movie.sources.trakt.me", AsyncMock(return_value={"username": "Other", "private": True, "ids": {"slug": "other-user"}})):
+                changed = (await client.post(me + "/trakt", headers=site, json={**connect, "region": "JP"})).json()["data"]["subscription"]
+                # Someone else's website account can't take the same Trakt account.
+                assert (await client.post("/website/movies/users/otherSite/trakt", headers=site, json=connect)).status_code == 409
+            assert changed["revision"] != job["revision"] and changed["userId"] == uid and changed["traktPrivate"] is True
             assert (await client.patch(record, headers=bot, json={"revision": job["revision"], "data": {"score": 2}})).status_code == 409
             # Two profiles meeting (website account + a bot-created Discord profile): the website's wins.
             other_uid = "987654321098765432"

@@ -1,4 +1,5 @@
-"""A public Trakt user's watched movies and ratings (port of the bot's trakt.js fetchUserMovies)."""
+"""A Trakt user's watched movies and ratings (port of the bot's trakt.js fetchUserMovies). Public
+profiles are read as the app; a connected account's token also reads a private one."""
 
 import asyncio
 from typing import Any
@@ -16,15 +17,21 @@ class TraktUserError(Exception):
     """The user is missing or private. The message is shown to them."""
 
 
+class TraktTokenError(Exception):
+    """The profile owner's token no longer works (expired, revoked): they must authorize again."""
+
+
 def _part(value: str) -> str:
     # encodeURIComponent: these stay unescaped too.
     return quote(value, safe="!*'()")
 
 
-async def _get(path: str, params: dict[str, Any] | None = None) -> tuple[int | None, Any]:
-    status, page_count, body = await trakt_get(path, params)
+async def _get(path: str, params: dict[str, Any] | None = None, token: str | None = None) -> tuple[int | None, Any]:
+    status, page_count, body = await trakt_get(path, params, token)
     if status == 404:
         raise TraktUserError("找不到这个 Trakt 用户")
+    if status == 401 and token:
+        raise TraktTokenError("Trakt 授权已失效")
     if status in (401, 403):
         raise TraktUserError("这个 Trakt 帐号不是公开的")
     if not 200 <= status < 300:
@@ -32,12 +39,12 @@ async def _get(path: str, params: dict[str, Any] | None = None) -> tuple[int | N
     return page_count, body
 
 
-async def _all(path: str) -> list:
+async def _all(path: str, token: str | None = None) -> list:
     """Every item of a list, across pages; unpaginated lists (ratings) come in one go."""
     items: list = []
     for page in range(1, MAX_PAGES + 1):
         # extended=full adds each title's genres; "anime" there tells anime from other animation.
-        page_count, body = await _get(path, {"page": page, "limit": PAGE_LIMIT, "extended": "full"})
+        page_count, body = await _get(path, {"page": page, "limit": PAGE_LIMIT, "extended": "full"}, token)
         items.extend(body or [])
         count = page_count or 1
         if count > MAX_PAGES:
@@ -69,22 +76,22 @@ def js_greater(a: Any, b: Any) -> bool:
     return isinstance(a, str) and isinstance(b, str) and a > b
 
 
-async def fetch_user_movies(slug: str) -> dict:
+async def fetch_user_movies(slug: str, token: str | None = None) -> dict:
     """{profile, ratings: [{rating, ratedAt, movie}], watched: [{plays, lastWatchedAt, movie}],
     showRatings: [{rating, seasons, ratedAt, show}], watchedShows: [{plays, lastWatchedAt, show, episodes}]};
     movie / show: {title, year, ids: {trakt, slug, imdb, tmdb}}."""
     # The lists answer an empty 200 for users that don't exist, so check the profile first.
-    _, profile = await _get(f"/users/{_part(slug)}")
-    if (profile or {}).get("private"):
+    _, profile = await _get(f"/users/{_part(slug)}", None, token)
+    if (profile or {}).get("private") and not token:
         raise TraktUserError("这个 Trakt 帐号不是公开的")
     profile_slug = ((profile or {}).get("ids") or {}).get("slug") or slug
     user = _part(profile_slug)
     ratings, watched, season_ratings, whole_show_ratings, watched_shows = await asyncio.gather(
-        _all(f"/users/{user}/ratings/movies"),
-        _all(f"/users/{user}/watched/movies"),
-        _all(f"/users/{user}/ratings/seasons"),
-        _all(f"/users/{user}/ratings/shows"),
-        _all(f"/users/{user}/watched/shows"),
+        _all(f"/users/{user}/ratings/movies", token),
+        _all(f"/users/{user}/watched/movies", token),
+        _all(f"/users/{user}/ratings/seasons", token),
+        _all(f"/users/{user}/ratings/shows", token),
+        _all(f"/users/{user}/watched/shows", token),
     )
     return {
         "profile": {"slug": profile_slug, "username": (profile or {}).get("username") or slug},

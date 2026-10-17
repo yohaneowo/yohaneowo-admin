@@ -7,8 +7,11 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
+from app.utils.crypto_util import CryptoUtil
+
 from .model import MovieCacheModel, MovieRecordModel, MovieSubscriberModel
 from .schema import SubscriptionIn, SubscriptionOut
+from .sources.trakt import TraktTokens
 
 # Loads a profile row without its large JSON columns, for queries that sort or list many rows.
 WITHOUT_JSON = (defer(MovieSubscriberModel.snapshot), defer(MovieSubscriberModel.taste))
@@ -25,6 +28,10 @@ def subscription_out(row: MovieSubscriberModel) -> SubscriptionOut:
         siteUserId=row.site_user_id,
         traktUser=row.trakt_user,
         traktName=row.trakt_name,
+        traktAvatar=row.trakt_avatar,
+        traktPrivate=row.trakt_private,
+        traktConnected=bool(row.trakt_refresh_token),
+        traktReauth=row.trakt_reauth,
         region=row.region,
         subscribedAt=row.subscribed_at,
         active=row.active,
@@ -126,12 +133,65 @@ async def site_profile(db: AsyncSession, site_user_id: str, discord_id: str | No
     return None
 
 
-async def save_site_profile(db: AsyncSession, site_user_id: str, discord_id: str | None, trakt_user: str, trakt_name: str, region: str):
+class TraktTaken(Exception):
+    """The Trakt account already belongs to another website account's profile."""
+
+
+async def by_trakt(db: AsyncSession, trakt_user: str, *, lock: bool = False):
+    return await _one(db, select(MovieSubscriberModel).where(MovieSubscriberModel.trakt_user == trakt_user), lock=lock)
+
+
+def store_tokens(row: MovieSubscriberModel, tokens: TraktTokens, redirect_uri: str | None) -> None:
+    row.trakt_access_token = CryptoUtil.encrypt(tokens.access_token)
+    row.trakt_refresh_token = CryptoUtil.encrypt(tokens.refresh_token)
+    row.trakt_token_expires_at = tokens.expires_at
+    row.trakt_redirect_uri = redirect_uri
+    row.trakt_reauth = False
+
+
+def tokens_of(row: MovieSubscriberModel) -> TraktTokens | None:
+    if not row.trakt_refresh_token or not row.trakt_access_token:
+        return None
+    return TraktTokens(
+        access_token=CryptoUtil.decrypt(row.trakt_access_token),
+        refresh_token=CryptoUtil.decrypt(row.trakt_refresh_token),
+        expires_at=row.trakt_token_expires_at or utcnow(),
+    )
+
+
+async def connect_trakt(db: AsyncSession, site_user_id: str, discord_id: str | None, region: str, tokens: TraktTokens, redirect_uri: str, me: dict):
+    """The website account authorized a Trakt account: make it the account's profile. A profile
+    the bot created for the same Trakt account (not yet owned by a website account) is claimed;
+    one owned by another website account is a conflict (TraktTaken)."""
+    slug = str((me.get("ids") or {}).get("slug") or me.get("username") or "")
+    if not slug:
+        raise ValueError("Trakt profile without a slug")
     row = await site_profile(db, site_user_id, discord_id, lock=True)
+    holder = await by_trakt(db, slug, lock=True)
+    if holder is not None and (row is None or holder.profile_id != row.profile_id):
+        if holder.site_user_id is not None:
+            raise TraktTaken()
+        if row is None:
+            holder.site_user_id = site_user_id
+            row = holder
+        else:
+            await merge(db, keep=row, drop=holder)
     if row is None:
         row = MovieSubscriberModel(site_user_id=site_user_id, discord_id=discord_id, revision=str(uuid4()))
         db.add(row)
-    set_trakt(row, trakt_user, trakt_name, region)
+    set_trakt(row, slug, str(me.get("username") or slug), region)
+    row.trakt_avatar = ((me.get("images") or {}).get("avatar") or {}).get("full") or None
+    row.trakt_private = bool(me.get("private"))
+    store_tokens(row, tokens, redirect_uri)
+    await db.flush()
+    return row
+
+
+async def set_region(db: AsyncSession, site_user_id: str, region: str):
+    row = await by_site_user(db, site_user_id, lock=True)
+    if row is None or not row.active:
+        raise HTTPException(404, "没有有效订阅")
+    row.region = region
     await db.flush()
     return row
 
@@ -216,17 +276,25 @@ async def watched_rank(db: AsyncSession, row: MovieSubscriberModel) -> dict | No
 
 
 SYNC_ERROR = "暂时无法从 Trakt / TMDB 更新，稍后自动重试。"
+REAUTH_ERROR = "Trakt 授权已失效，请在网站重新授权。"
 
 
-async def finish_sync(db: AsyncSession, profile_id: str, revision: str, lease_id: str, snapshot: dict | None, taste: dict | None, *, again: bool = False) -> bool:
+async def finish_sync(db: AsyncSession, profile_id: str, revision: str, lease_id: str, snapshot: dict | None, taste: dict | None, *, again: bool = False, reauth: bool = False) -> bool:
     """Store a sync's result (snapshot None = failed). False when the lease is stale: the
     profile changed or another sync took over, so the result is dropped. again: sync once
-    more right away (the anime lookups ran out of time)."""
+    more right away (the anime lookups ran out of time). reauth: Trakt rejected the owner's
+    token, so syncs pause until they authorize again."""
     row = await by_id(db, profile_id, lock=True)
     if row is None or not row.active or row.revision != revision or row.lease_id != lease_id:
         return False
     row.lease_id, row.lease_until = None, None
-    if snapshot is None:
+    if reauth:
+        row.trakt_reauth = True
+        row.sync_error = REAUTH_ERROR
+        # Not before a new authorization (connect_trakt clears the flag and requests a sync).
+        row.sync_requested = False
+        row.retry_after = utcnow() + timedelta(days=3650)
+    elif snapshot is None:
         row.sync_error = SYNC_ERROR
         row.retry_after = utcnow() + timedelta(minutes=5)
     else:

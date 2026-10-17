@@ -20,14 +20,20 @@ class SubscriptionIn(BaseModel):
     subscribedAt: datetime | None = None
 
 
-class ProfileIn(BaseModel):
-    """What a person types on the website: a Trakt profile link or username, and where they watch."""
+class TraktConnectIn(BaseModel):
+    """The website's end of Trakt's OAuth: the authorization code it was redirected back with."""
 
     model_config = ConfigDict(extra="forbid")
-    trakt: str = Field(min_length=1, max_length=300)
+    code: str = Field(min_length=1, max_length=200)
+    redirectUri: str = Field(min_length=1, max_length=500, pattern=r"^https?://")
     region: str = Field(pattern=r"^[A-Z]{2}$")
     # The website account's linked Discord user, so the bot can find this profile.
     discordId: DiscordId | None = None
+
+
+class RegionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    region: str = Field(pattern=r"^[A-Z]{2}$")
 
 
 class SubscriptionOut(BaseModel):
@@ -37,6 +43,11 @@ class SubscriptionOut(BaseModel):
     siteUserId: str | None
     traktUser: str
     traktName: str
+    traktAvatar: str | None
+    traktPrivate: bool
+    # The website holds Trakt tokens for this profile; traktReauth: they stopped working.
+    traktConnected: bool
+    traktReauth: bool
     region: str
     subscribedAt: DateTimeStr
     active: bool

@@ -70,6 +70,7 @@ async def tmdb_get(path: str, params: dict[str, Any] | None = None) -> tuple[int
         return await tmdb.get(db, path, params)
 
 
-async def trakt_get(path: str, params: dict[str, Any] | None = None) -> tuple[int, int | None, Any]:
+async def trakt_get(path: str, params: dict[str, Any] | None = None, token: str | None = None) -> tuple[int, int | None, Any]:
+    """One Trakt GET; `token` is the profile owner's OAuth token (private accounts answer then)."""
     async with async_db_session() as db, db.begin():
-        return await trakt.get(db, path, params)
+        return await trakt.get(db, path, params, token=token)

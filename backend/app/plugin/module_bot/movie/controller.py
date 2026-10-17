@@ -14,7 +14,7 @@ from ..internal_auth import verify_bot_token
 from . import people, service
 from .auth import verify_site_token
 from .model import MovieSubscriberModel
-from .schema import CacheBatch, CacheKeys, DiscordId, ProfileIn, RatingsIn, RecordPatch, SiteUserId, SourceRequest, SubscriptionIn, WikimediaRequest
+from .schema import CacheBatch, CacheKeys, DiscordId, RatingsIn, RecordPatch, RegionIn, SiteUserId, SourceRequest, SubscriptionIn, TraktConnectIn, WikimediaRequest
 from .sources import omdb, tmdb, trakt, wikipedia
 from .sources.base import SourceUnavailable
 from .sync import job
@@ -161,19 +161,38 @@ async def website_statistics(site_user_id: SiteUserId, db: Db, discordId: Discor
     return SuccessResponse(data=_website_view(row, platform))
 
 
-@MovieWebsiteRouter.put("/users/{site_user_id}")
-async def website_save_profile(site_user_id: SiteUserId, data: ProfileIn, db: Db):
-    """Create the account's profile, or point it at another Trakt account / region. 422 with a
-    code (traktInvalid / traktNotFound / traktPrivate) when the Trakt details can't be used."""
+@MovieWebsiteRouter.get("/trakt/authorize")
+async def trakt_authorize(redirectUri: Annotated[str, Query(max_length=500, pattern=r"^https?://")], state: Annotated[str, Query(max_length=200)]):
+    """Where to send the browser to authorize this app on Trakt (the client id lives here)."""
     try:
-        trakt_user, trakt_name = await trakt.resolve_user(db, data.trakt)
-    except trakt.TraktUserError as error:
-        raise HTTPException(422, error.code) from error
+        return SuccessResponse(data={"url": trakt.authorize_url(redirectUri, state)})
     except SourceUnavailable as error:
         raise HTTPException(503, str(error)) from error
-    row = await service.save_site_profile(db, site_user_id, data.discordId, trakt_user, trakt_name, data.region)
+
+
+@MovieWebsiteRouter.post("/users/{site_user_id}/trakt")
+async def website_connect_trakt(site_user_id: SiteUserId, data: TraktConnectIn, db: Db):
+    """Trakt sent the browser back with a code: exchange it, read who authorized, and make that
+    Trakt account the website account's profile. 409 traktTaken when another website account
+    already has it; 422 traktDenied when the code is no good."""
+    try:
+        tokens = await trakt.exchange_code(db, data.code, data.redirectUri)
+        me = await trakt.me(db, tokens.access_token)
+    except trakt.TraktAuthError as error:
+        raise HTTPException(422, "traktDenied") from error
+    except SourceUnavailable as error:
+        raise HTTPException(503, str(error)) from error
+    try:
+        row = await service.connect_trakt(db, site_user_id, data.discordId, data.region, tokens, data.redirectUri, me)
+    except service.TraktTaken as error:
+        raise HTTPException(409, "traktTaken") from error
     job.wake()
     return SuccessResponse(data=_website_view(row, None))
+
+
+@MovieWebsiteRouter.put("/users/{site_user_id}/region")
+async def website_set_region(site_user_id: SiteUserId, data: RegionIn, db: Db):
+    return SuccessResponse(data=_website_view(await service.set_region(db, site_user_id, data.region), None))
 
 
 @MovieWebsiteRouter.post("/users/{site_user_id}/refresh")
