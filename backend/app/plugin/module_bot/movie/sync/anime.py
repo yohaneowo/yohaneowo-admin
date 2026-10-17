@@ -40,6 +40,8 @@ OLD_CACHE_DAYS = 90
 MAL_CACHE_DAYS = 7
 # Consecutive failed MAL lookups before giving up until the next sync.
 MAL_MAX_FAILURES = 3
+# A season whose Bangumi lookup failed keeps its AniList data and retries Bangumi after this long.
+BANGUMI_RETRY_HOURS = 6
 BUDGET_SECONDS = 240
 FAVOURITES_PER_ROLE = 8
 
@@ -78,6 +80,8 @@ def _fuzzy(value: dict | None) -> date | None:
 
 def _stale(entry: dict | None, today: date) -> bool:
     if not entry or entry.get("cacheVersion") != CACHE_VERSION:
+        return True
+    if entry.get("bangumiPending") and str(entry.get("fetchedAt", "")) < (datetime.now(UTC) - timedelta(hours=BANGUMI_RETRY_HOURS)).isoformat():
         return True
     aired = _date(entry.get("airDate"))
     days = OLD_CACHE_DAYS if aired and aired < today - timedelta(days=365) else RECENT_CACHE_DAYS
@@ -184,18 +188,30 @@ async def _bangumi(db, titles: list[str], aired: date) -> dict | None:
     return None
 
 
-async def match_season(item: dict, season: dict, previous: dict | None) -> dict:
-    """One TMDB season's AniList and Bangumi entries (either may be None)."""
+async def match_season(item: dict, season: dict, previous: dict | None, current: dict | None = None, bangumi_ok: bool = True) -> tuple[dict, bool]:
+    """(one TMDB season's AniList and Bangumi entries (either may be None), whether Bangumi failed).
+    An AniList failure raises; a Bangumi failure (or `bangumi_ok` False, after one failed earlier in
+    the run) keeps `current`'s Bangumi data if any and marks the entry to retry Bangumi soon, so
+    AniList's genres and scores never wait on Bangumi, which this network loses now and then."""
     aired = _date(season.get("airDate"))
     if aired is None:
-        return {"cacheVersion": CACHE_VERSION, "fetchedAt": _now(), "airDate": None, "anilist": None, "bangumi": None}
+        return {"cacheVersion": CACHE_VERSION, "fetchedAt": _now(), "airDate": None, "anilist": None, "bangumi": None}, False
     base = [t for t in dict.fromkeys([item.get("originalTitle"), item.get("titleEn")]) if t]
     async with async_db_session() as db, db.begin():
         found = await _anilist(db, base, aired, (previous or {}).get("anilist"))
     titles = [t for t in dict.fromkeys([*base, (found or {}).get("titleNative")]) if t]
-    async with async_db_session() as db, db.begin():
-        subject = await _bangumi(db, titles, aired)
-    return {"cacheVersion": CACHE_VERSION, "fetchedAt": _now(), "airDate": season.get("airDate"), "anilist": found, "bangumi": subject}
+    subject, failed = None, False
+    if bangumi_ok:
+        try:
+            async with async_db_session() as db, db.begin():
+                subject = await _bangumi(db, titles, aired)
+        except SourceUnavailable:
+            failed = True
+    entry = {"cacheVersion": CACHE_VERSION, "fetchedAt": _now(), "airDate": season.get("airDate"), "anilist": found, "bangumi": subject}
+    if failed or not bangumi_ok:
+        entry["bangumi"] = (current or {}).get("bangumi")
+        entry["bangumiPending"] = True
+    return entry, failed
 
 
 # ── Filling a section ──
@@ -334,6 +350,7 @@ async def enrich_anime(section: dict | None, budget_seconds: float = BUDGET_SECO
     cache = await read_cache(NAMESPACE, [f"{item['id']}:{season['number']}" for item, season in seasons])
     pending = False
     unavailable = False
+    bangumi_ok = True
     for item in section["items"]:
         previous = None
         fresh: dict[str, dict] = {}
@@ -346,11 +363,17 @@ async def enrich_anime(section: dict | None, budget_seconds: float = BUDGET_SECO
                     pending = True
                 else:
                     try:
-                        fresh[key] = cache[key] = await match_season(item, season, previous)
+                        entry, bangumi_failed = await match_season(item, season, previous, cache.get(key), bangumi_ok)
                     except SourceUnavailable as error:
                         # Not cached: tried again at the next sync, without hurrying it.
                         logger.warning(f"[movie-sync] Anime lookup stopped: {error}")
                         unavailable = True
+                        continue
+                    fresh[key] = cache[key] = entry
+                    if bangumi_failed:
+                        # The rest of this run skips Bangumi (each attempt would wait out a timeout).
+                        logger.warning("[movie-sync] Bangumi unavailable; AniList lookups continue, Bangumi is retried later.")
+                        bangumi_ok = False
             previous = cache.get(key)
         await write_cache(NAMESPACE, fresh)
     if unavailable:
