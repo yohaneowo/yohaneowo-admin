@@ -11,10 +11,11 @@ from app.core.base_schema import AuthSchema
 from app.core.dependencies import AuthPermission, db_getter
 
 from ..internal_auth import verify_bot_token
+from . import bonds as bonds_module
 from . import people, recommend, service
 from .auth import verify_site_token
 from .model import MovieSubscriberModel
-from .schema import CacheBatch, CacheKeys, DiscordId, PickIn, RatingsIn, RecordPatch, RegionIn, SiteUserId, SourceRequest, SubscriptionIn, TraktConnectIn, WatchedIn, WikimediaRequest
+from .schema import BondsIn, CacheBatch, CacheKeys, DiscordId, PickIn, RatingsIn, RecordPatch, RegionIn, SiteUserId, SourceRequest, SubscriptionIn, TraktConnectIn, WatchedIn, WikimediaRequest
 from .sources import omdb, tmdb, trakt, wikipedia
 from .sources.base import SourceUnavailable
 from .sync import job
@@ -260,6 +261,20 @@ async def website_connect_trakt(site_user_id: SiteUserId, data: TraktConnectIn, 
         raise HTTPException(409, "traktTaken") from error
     job.wake()
     return SuccessResponse(data=_website_view(row, None))
+
+
+@MovieWebsiteRouter.post("/users/{site_user_id}/bonds")
+async def website_bonds(site_user_id: SiteUserId, data: BondsIn, db: Db):
+    """羁绊: what the account has watched in common with each of these Discord users' profiles."""
+    me = await service.by_site_user(db, site_user_id)
+    if me is None or not me.active:
+        raise HTTPException(404, "noProfile")
+    others = []
+    for discord_id in dict.fromkeys(data.discordIds):
+        other = await service.by_discord(db, discord_id)
+        if other is not None and other.active:
+            others.append(other)
+    return SuccessResponse(data={"bonds": bonds_module.bonds(me, others)})
 
 
 @MovieWebsiteRouter.put("/users/{site_user_id}/region")

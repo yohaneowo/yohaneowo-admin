@@ -51,6 +51,13 @@ class WatchedIn(BaseModel):
     rating: int | None = Field(default=None, ge=1, le=10)
 
 
+class BondsIn(BaseModel):
+    """Discord users who share a server with the account (the website knows the servers)."""
+
+    model_config = ConfigDict(extra="forbid")
+    discordIds: list[DiscordId] = Field(default_factory=list, max_length=200)
+
+
 class RegionIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     region: str = Field(pattern=r"^[A-Z]{2}$")
