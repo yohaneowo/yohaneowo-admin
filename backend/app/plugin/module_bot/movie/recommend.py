@@ -75,6 +75,12 @@ CONFIG: dict[str, Any] = {
     "poolSize": 60,
     "blindSpotThreshold": 0.3,
     "fallbackBlindSpotCount": 4,
+    # A cold account is blind to every genre; the explore pool stays within reach by capping how
+    # many genres and how many films per genre / decade get their details fetched.
+    "maxBlindGenres": 6,
+    "exploreGenreCandidates": 25,
+    "exploreDecadeCandidates": 15,
+    "exploreCollectionLookups": 40,
     "genreDiscover": {"voteCountGte": 3000, "voteAverageGte": 7.5, "pages": 3},
     "decadeDiscover": {"voteCountGte": 1500, "voteAverageGte": 7.3, "pages": 2},
     "collection": {"minAvg": 7.0, "minTotalVotes": 5000, "minFirstFilm": 7.0},
@@ -444,7 +450,9 @@ def blind_genres(profile: dict, share: dict[str, float]) -> dict[int, float]:
     blind = {gid: s for gid, s in scores.items() if s < CONFIG["blindSpotThreshold"]}
     if not blind:
         blind = dict(sorted(scores.items(), key=lambda kv: kv[1])[: CONFIG["fallbackBlindSpotCount"]])
-    return blind
+    # Least watched first; among equals, the genres most people watch (an easier way in).
+    ordered = sorted(blind.items(), key=lambda kv: (kv[1], -share.get(str(kv[0]), 0.0)))
+    return dict(ordered[: CONFIG["maxBlindGenres"]])
 
 
 def blind_decades(profile: dict) -> dict[int, float]:
@@ -530,20 +538,24 @@ async def _comfort_pool(profile: dict, token: str, excluded: set[int]) -> list[d
 
 async def _explore_pool(profile: dict, excluded: set[int], blind_genre_scores: dict[int, float], blind_decade_scores: dict[int, float]) -> list[dict]:
     found: dict[int, dict] = {}
+    by_votes = lambda m: -(m.get("vote_count") or 0)  # noqa: E731
     for gid, blind in blind_genre_scores.items():
-        for movie in await genre_classics(gid):
-            if movie["id"] not in excluded and movie["id"] not in found:
-                found[movie["id"]] = {"source": "genre", "blindGenre": gid, "blind": 1 - min(blind, 1.0)}
+        fresh = [m for m in await genre_classics(gid) if m["id"] not in excluded and m["id"] not in found]
+        for movie in sorted(fresh, key=by_votes)[: CONFIG["exploreGenreCandidates"]]:
+            found[movie["id"]] = {"source": "genre", "blindGenre": gid, "blind": 1 - min(blind, 1.0)}
     for decade, blind in blind_decade_scores.items():
-        for movie in await decade_classics(decade):
-            if movie["id"] not in excluded and movie["id"] not in found:
-                found[movie["id"]] = {"source": "decade", "blindDecade": decade, "blind": 1 - min(blind, 1.0)}
+        fresh = [m for m in await decade_classics(decade) if m["id"] not in excluded and m["id"] not in found]
+        for movie in sorted(fresh, key=by_votes)[: CONFIG["exploreDecadeCandidates"]]:
+            found[movie["id"]] = {"source": "decade", "blindDecade": decade, "blind": 1 - min(blind, 1.0)}
     details = await load_details(list(found))
-    # Series: a candidate that is the first film of a series the person has not started.
+    # Series: a candidate that is the first film of a series the person has not started. Only the
+    # most-voted candidates are looked up (one TMDB request per series, cached a month).
     collections: dict[int, list[dict]] = {}
-    for tid in found:
+    for tid in sorted(found, key=lambda t: -((details.get(t) or {}).get("voteCount") or 0)):
         cid = (details.get(tid) or {}).get("collectionId")
         if is_integer(cid) and cid not in collections and cid not in profile["dislikedCollections"]:
+            if len(collections) >= CONFIG["exploreCollectionLookups"]:
+                break
             collections[cid] = await collection_parts(cid)
     watched = set(profile["watched"])
     cfg = CONFIG["collection"]
@@ -998,6 +1010,7 @@ async def picks_today(db: AsyncSession, profile_id: str) -> int:
 
 def pick_out(row: MoviePickModel) -> dict:
     return {
+        "card": row.data,
         "pickId": row.pick_id,
         "tmdbId": row.tmdb_id,
         "mode": row.mode,
