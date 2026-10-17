@@ -162,10 +162,15 @@ async def website_statistics(site_user_id: SiteUserId, db: Db, discordId: Discor
 
 
 @MovieWebsiteRouter.get("/trakt/authorize")
-async def trakt_authorize(redirectUri: Annotated[str, Query(max_length=500, pattern=r"^https?://")], state: Annotated[str, Query(max_length=200)]):
-    """Where to send the browser to authorize this app on Trakt (the client id lives here)."""
+async def trakt_authorize(
+    redirectUri: Annotated[str, Query(max_length=500, pattern=r"^https?://")],
+    state: Annotated[str, Query(max_length=200)],
+    codeChallenge: Annotated[str, Query(min_length=43, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")],
+):
+    """Where to send the browser to authorize this app on Trakt (the client id lives here); the
+    website supplies the PKCE challenge and keeps the verifier."""
     try:
-        return SuccessResponse(data={"url": trakt.authorize_url(redirectUri, state)})
+        return SuccessResponse(data={"url": trakt.authorize_url(redirectUri, state, codeChallenge)})
     except SourceUnavailable as error:
         raise HTTPException(503, str(error)) from error
 
@@ -176,7 +181,7 @@ async def website_connect_trakt(site_user_id: SiteUserId, data: TraktConnectIn, 
     Trakt account the website account's profile. 409 traktTaken when another website account
     already has it; 422 traktDenied when the code is no good."""
     try:
-        tokens = await trakt.exchange_code(db, data.code, data.redirectUri)
+        tokens = await trakt.exchange_code(db, data.code, data.redirectUri, data.codeVerifier)
         me = await trakt.me(db, tokens.access_token)
     except trakt.TraktAuthError as error:
         raise HTTPException(422, "traktDenied") from error

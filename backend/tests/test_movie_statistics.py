@@ -59,7 +59,7 @@ async def check_lifecycle():
         patch("app.utils.crypto_util.CryptoUtil.encrypt", side_effect=lambda value: f"enc:{value}"),
         patch("app.utils.crypto_util.CryptoUtil.decrypt", side_effect=lambda value: value.removeprefix("enc:")),
     ):
-        connect = {"code": "oauth-code", "redirectUri": "https://site.test/api/trakt/callback", "region": "TW"}
+        connect = {"code": "oauth-code", "redirectUri": "https://site.test/api/trakt/callback", "codeVerifier": "v" * 43, "region": "TW"}
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             assert (await client.get(me)).status_code == 401
             assert (await client.put(sub, headers=site)).status_code == 401

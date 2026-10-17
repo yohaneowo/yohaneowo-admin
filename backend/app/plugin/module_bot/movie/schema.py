@@ -26,6 +26,8 @@ class TraktConnectIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     code: str = Field(min_length=1, max_length=200)
     redirectUri: str = Field(min_length=1, max_length=500, pattern=r"^https?://")
+    # PKCE verifier matching the challenge the authorization started with.
+    codeVerifier: str = Field(min_length=43, max_length=128, pattern=r"^[A-Za-z0-9._~-]+$")
     region: str = Field(pattern=r"^[A-Z]{2}$")
     # The website account's linked Discord user, so the bot can find this profile.
     discordId: DiscordId | None = None

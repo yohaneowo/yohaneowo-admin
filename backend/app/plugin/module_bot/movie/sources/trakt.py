@@ -1,6 +1,8 @@
 """Trakt: watch history and ratings, and the OAuth that lets a website account connect its Trakt
 account. Public profiles only need the app's client ID; a connected account's token also reads a
-private profile. The client secret stays here (Doppler), the website never sees it."""
+private profile. The flow uses PKCE (Trakt requires it for apps created since 2026-10 and issues
+them no client secret); when an older app does have a secret, it stays here (Doppler) and is sent
+along too, the website never sees it."""
 
 import re
 from dataclasses import dataclass
@@ -67,12 +69,14 @@ async def get(db: AsyncSession, path: str, params: dict[str, Any] | None = None,
     return response.status_code, int(pages) if pages and pages.isdigit() else None, json_or_none(response)
 
 
-def authorize_url(redirect_uri: str, state: str) -> str:
-    """Where the browser goes to let this app read the person's Trakt account."""
+def authorize_url(redirect_uri: str, state: str, code_challenge: str) -> str:
+    """Where the browser goes to let this app read the person's Trakt account. `code_challenge` is
+    the S256 hash of the verifier the website keeps for the token exchange."""
     key = client_id()
     if not key:
         raise SourceUnavailable("admin 没有设定 TRAKT_CLIENT_ID")
-    return f"{AUTHORIZE_URL}?{urlencode({'response_type': 'code', 'client_id': key, 'redirect_uri': redirect_uri, 'state': state})}"
+    query = {"response_type": "code", "client_id": key, "redirect_uri": redirect_uri, "state": state, "code_challenge": code_challenge, "code_challenge_method": "S256"}
+    return f"{AUTHORIZE_URL}?{urlencode(query)}"
 
 
 def _tokens(body: Any) -> TraktTokens:
@@ -86,9 +90,12 @@ def _tokens(body: Any) -> TraktTokens:
 
 async def _token_request(db: AsyncSession, payload: dict[str, str]) -> TraktTokens:
     settings = TraktSettings()
-    if not settings.TRAKT_CLIENT_ID or not settings.TRAKT_CLIENT_SECRET:
-        raise SourceUnavailable("admin 没有设定 TRAKT_CLIENT_ID / TRAKT_CLIENT_SECRET")
-    body = {**payload, "client_id": settings.TRAKT_CLIENT_ID, "client_secret": settings.TRAKT_CLIENT_SECRET}
+    if not settings.TRAKT_CLIENT_ID:
+        raise SourceUnavailable("admin 没有设定 TRAKT_CLIENT_ID")
+    body = {**payload, "client_id": settings.TRAKT_CLIENT_ID}
+    # PKCE apps have no secret; Trakt would reject a wrong one, so only send a real, distinct value.
+    if settings.TRAKT_CLIENT_SECRET and settings.TRAKT_CLIENT_SECRET != settings.TRAKT_CLIENT_ID:
+        body["client_secret"] = settings.TRAKT_CLIENT_SECRET
     response = await fetch(db, "trakt", f"{API_URL}/oauth/token", method="POST", json=body, headers={"Content-Type": "application/json", "User-Agent": "yohaneowo-admin"}, timeout=20)
     if response.status_code in (400, 401, 403):
         raise TraktAuthError(f"Trakt token request rejected: HTTP {response.status_code}")
@@ -97,9 +104,10 @@ async def _token_request(db: AsyncSession, payload: dict[str, str]) -> TraktToke
     return _tokens(json_or_none(response))
 
 
-async def exchange_code(db: AsyncSession, code: str, redirect_uri: str) -> TraktTokens:
-    """The authorization code Trakt sent the browser back with → tokens."""
-    return await _token_request(db, {"code": code, "redirect_uri": redirect_uri, "grant_type": "authorization_code"})
+async def exchange_code(db: AsyncSession, code: str, redirect_uri: str, code_verifier: str) -> TraktTokens:
+    """The authorization code Trakt sent the browser back with → tokens. `code_verifier` is the
+    PKCE verifier whose hash started the authorization."""
+    return await _token_request(db, {"code": code, "redirect_uri": redirect_uri, "grant_type": "authorization_code", "code_verifier": code_verifier})
 
 
 async def refresh(db: AsyncSession, refresh_token: str, redirect_uri: str) -> TraktTokens:
