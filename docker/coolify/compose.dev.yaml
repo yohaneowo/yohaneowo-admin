@@ -1,0 +1,93 @@
+# yohaneowo-admin's dev deployment on Coolify (branch develop, domain admin-dev.yohaneowo.com,
+# Doppler yohaneowo-admin / stg, its own MySQL resource admin-mysql-dev). Same layout as
+# compose.yaml; only the names that show up on Coolify's shared `coolify` network differ, because
+# the production stack is on that network too and aliases must not collide there:
+# - the website's dev deployment and the dev bot reach nginx as http://yohaneowo-admin-dev-web;
+# - Redis answers to admin-dev-redis.
+# Keep the two files in step when changing services or environment.
+services:
+    redis:
+        image: redis:7-alpine
+        restart: unless-stopped
+        command: ['redis-server', '--requirepass', '${SERVICE_PASSWORD_REDIS}', '--appendonly', 'yes']
+        volumes:
+            - redis:/data
+        healthcheck:
+            test: ['CMD-SHELL', 'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep PONG']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+        environment:
+            REDIS_PASSWORD: ${SERVICE_PASSWORD_REDIS}
+        networks:
+            default:
+                aliases:
+                    - admin-dev-redis
+
+    backend:
+        build:
+            context: .
+            dockerfile: docker/coolify/backend.Dockerfile
+        restart: unless-stopped
+        environment:
+            TZ: Asia/Shanghai
+            ENVIRONMENT: prod
+            DEBUG: 'false'
+            LOGGER_LEVEL: INFO
+            DATABASE_TYPE: mysql
+            DATABASE_HOST: ${DATABASE_HOST}
+            DATABASE_PORT: '3306'
+            DATABASE_USER: fastapiadmin
+            DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+            DATABASE_NAME: fastapiadmin
+            REDIS_HOST: admin-dev-redis
+            REDIS_PORT: '6379'
+            REDIS_PASSWORD: ${SERVICE_PASSWORD_REDIS}
+            REDIS_DB_NAME: '1'
+            DOPPLER_TOKEN: ${DOPPLER_TOKEN}
+            DISPLAY_TIMEZONE: Asia/Taipei
+            DEMO_ENABLE: 'false'
+            SCHEDULER_ALLOW_CODE_EXEC: 'false'
+            FORWARDED_ALLOW_IPS: 127.0.0.1
+            TRUSTED_PROXY_HOPS: '1'
+            ALLOWED_HOSTS: '["admin-dev.yohaneowo.com","yohaneowo-admin-dev-web","web"]'
+        volumes:
+            - upload:/home/static/upload
+        networks:
+            - default
+            - coolify
+        depends_on:
+            redis:
+                condition: service_healthy
+        healthcheck:
+            test:
+                - CMD-SHELL
+                - >-
+                    python -c 'import urllib.request; urllib.request.urlopen(urllib.request.Request("http://localhost:8001/api/v1/monitor/health/check", headers={"X-Forwarded-Proto": "https"}), timeout=5)'
+            interval: 15s
+            timeout: 10s
+            retries: 5
+            start_period: 60s
+
+    web:
+        build:
+            context: .
+            dockerfile: docker/coolify/web.Dockerfile
+        restart: unless-stopped
+        environment:
+            SERVICE_FQDN_WEB_80: ''
+        depends_on:
+            - backend
+        networks:
+            default:
+            coolify:
+                aliases:
+                    - yohaneowo-admin-dev-web
+
+volumes:
+    redis:
+    upload:
+
+networks:
+    coolify:
+        external: true
