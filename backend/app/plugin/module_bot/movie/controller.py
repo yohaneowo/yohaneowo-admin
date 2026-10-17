@@ -107,6 +107,13 @@ async def list_picks(discord_id: DiscordId, db: Db):
     )
 
 
+@MovieInternalRouter.get("/picks/{discord_id}/progress")
+async def get_pick_progress(discord_id: DiscordId, db: Db):
+    """Which stage a running pick is at (lists / profile / pools / card), or null when idle."""
+    row = await _bot_profile(db, discord_id)
+    return SuccessResponse(data=await recommend.progress_of(row.profile_id))
+
+
 @MovieInternalRouter.post("/picks/{discord_id}/{pick_id}/watchlist")
 async def post_pick_watchlist(discord_id: DiscordId, pick_id: Annotated[str, Field(max_length=36)], db: Db):
     row = await _bot_profile(db, discord_id)

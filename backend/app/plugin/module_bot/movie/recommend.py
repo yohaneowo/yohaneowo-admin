@@ -16,6 +16,7 @@ says the lists changed. A pick is one row in bot_movie_pick: that is how the day
 import asyncio
 import math
 import random
+import time
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -37,11 +38,14 @@ from .sync.taste import language, load_details
 TAIPEI = ZoneInfo("Asia/Taipei")
 POOL_NAMESPACE = "recommend_pool"
 GLOBAL_NAMESPACE = "recommend_global"
+# Where a pick is in its work, for the bot's "正在…" status (written per stage, read by polling).
+PROGRESS_NAMESPACE = "recommend_progress"
+STAGES = ("lists", "profile", "pools", "card")
 POOL_VERSION = 1
 POOL_MAX_AGE = timedelta(hours=24)
 GLOBAL_MAX_AGE = timedelta(days=30)
 DISCOVER_MAX_AGE = timedelta(days=7)
-POSTER_BASE = "https://image.tmdb.org/t/p/w342"
+POSTER_BASE = "https://image.tmdb.org/t/p/w780"
 TMDB_GENRE_ANIMATION = 16
 
 # Three picks a day (the first plus two "换一部"), none repeated within a month.
@@ -157,6 +161,19 @@ def _softmax_pick(candidates: list[dict], temperature: float, rng: random.Random
     top = max(scores)
     weights = [math.exp(s - top) for s in scores]
     return rng.choices(candidates, weights=weights, k=1)[0]
+
+
+async def _report(profile_id: str, stage: str | None) -> None:
+    """Record the stage a pick is at (None when done); the bot polls progress_of."""
+    try:
+        await write_cache(PROGRESS_NAMESPACE, {profile_id: {"stage": stage, "at": _now().isoformat()}})
+    except Exception as error:  # noqa: BLE001 - progress is cosmetic
+        logger.debug(f"[movie-recommend] progress write failed: {error}")
+
+
+async def progress_of(profile_id: str) -> dict:
+    found = (await read_cache(PROGRESS_NAMESPACE, [profile_id])).get(profile_id) or {}
+    return {"stage": found.get("stage"), "at": found.get("at")}
 
 
 # ── Trakt lists ─────────────────────────────────────────────────────────────────────────────
@@ -574,9 +591,14 @@ def _diversify(pool: list[dict], *, seed_key: str) -> list[dict]:
     return kept
 
 
-async def build_pools(token: str, recent_pick_ids: set[int]) -> dict:
+async def build_pools(token: str, recent_pick_ids: set[int], profile_id: str = "") -> dict:
     """Everything a pick needs, built from Trakt and TMDB; cached per profile."""
+    started = time.monotonic()
+    if profile_id:
+        await _report(profile_id, "lists")
     profile = await build_profile(token)
+    if profile_id:
+        await _report(profile_id, "pools")
     excluded = set(profile["watched"]) | set(profile["ratings"]) | set(profile["hidden"]) | set(profile["disliked"]) | recent_pick_ids
     share = await global_genre_share()
     blind_genre_scores = blind_genres(profile, share)
@@ -584,6 +606,11 @@ async def build_pools(token: str, recent_pick_ids: set[int]) -> dict:
     comfort = await _comfort_pool(profile, token, excluded)
     explore = await _explore_pool(profile, excluded, blind_genre_scores, blind_decade_scores)
     bridge = await _bridge_pool(profile, excluded, blind_genre_scores)
+    logger.info(
+        f"[movie-recommend] Pools built for {profile_id or '?'} in {time.monotonic() - started:.1f}s: "
+        f"watched {len(profile['watched'])}, rated {len(profile['ratings'])}, comfort {len(comfort)}, bridge {len(bridge)}, explore {len(explore)}, "
+        f"blind genres {sorted(blind_genre_scores)}, blind decades {sorted(blind_decade_scores)}"
+    )
     return {
         "version": POOL_VERSION,
         "builtAt": _now().isoformat(),
@@ -638,7 +665,7 @@ async def _pools_for(row: MovieSubscriberModel, token: str, recent_ids: set[int]
                 return cached
         except SourceUnavailable:
             return cached
-    pools = await build_pools(token, recent_ids)
+    pools = await build_pools(token, recent_ids, row.profile_id)
     await write_cache(POOL_NAMESPACE, {row.profile_id: pools})
     return pools
 
@@ -728,6 +755,7 @@ async def pick(db: AsyncSession, row: MovieSubscriberModel, filters: dict, skip_
     """One recommendation for the profile, recorded as a pick. filters: genre (TMDB genre id),
     decade (e.g. 1990), maxRuntime (minutes). skip_pick_id: the pick this one replaces (换一部)."""
     token = await _token_for(row)
+    started = time.monotonic()
     today = today_taipei().isoformat()
     recent = await _recent_picks(db, row.profile_id)
     if skip_pick_id:
@@ -738,7 +766,12 @@ async def pick(db: AsyncSession, row: MovieSubscriberModel, filters: dict, skip_
     if used >= DAILY_PICKS:
         raise DailyLimit(next_midnight_taipei())
     recent_ids = {p.tmdb_id for p in recent}
-    pools = await _pools_for(row, token, recent_ids)
+    try:
+        pools = await _pools_for(row, token, recent_ids)
+    except Exception:
+        await _report(row.profile_id, None)
+        raise
+    await _report(row.profile_id, "card")
     rng = random.Random()
     cold = pools["watchedCount"] < CONFIG["coldStartMinWatched"]
     weights = _mode_weights(recent)
@@ -762,7 +795,14 @@ async def pick(db: AsyncSession, row: MovieSubscriberModel, filters: dict, skip_
             )
             db.add(pick_row)
             await db.flush()
+            await _report(row.profile_id, None)
+            logger.info(
+                f"[movie-recommend] Pick for {row.profile_id}: {mode} → {card['title']} ({chosen['tmdbId']}) in {time.monotonic() - started:.1f}s"
+                f"{' (cold start)' if cold else ''}, filters {filters}, {DAILY_PICKS - used - 1} left today"
+            )
             return {**card, "pickId": pick_row.pick_id, "mode": mode, "reason": reason, "cold": cold, "remainingToday": DAILY_PICKS - used - 1}
+    await _report(row.profile_id, None)
+    logger.info(f"[movie-recommend] Nothing to pick for {row.profile_id} with filters {filters}")
     raise NothingToPick()
 
 
@@ -793,6 +833,7 @@ async def want(db: AsyncSession, row: MovieSubscriberModel, pick_id: str) -> dic
     found.acted_at = _now().replace(tzinfo=None)
     await db.flush()
     await _drop_from_pool(row.profile_id, found.tmdb_id)
+    logger.info(f"[movie-recommend] 想看 for {row.profile_id}: {found.title} ({found.tmdb_id}) → Trakt watchlist")
     return {"pickId": pick_id, "action": "watchlist", "added": ((body or {}).get("added") or {}).get("movies", 0) if isinstance(body, dict) else None}
 
 
@@ -820,9 +861,12 @@ async def watched(db: AsyncSession, row: MovieSubscriberModel, pick_id: str, rat
         status, _ = await _trakt("POST", "/sync/ratings", token, json={"movies": [{**movie, "rating": value, "rated_at": now}]})
         if status not in (200, 201):
             raise SourceUnavailable(f"Trakt 暂时无法写入评分（HTTP {status}）")
-    status, _ = await _trakt("POST", "/sync/history", token, json={"movies": [{**movie, "watched_at": now}]})
-    if status not in (200, 201):
-        raise SourceUnavailable(f"Trakt 暂时无法标记看过（HTTP {status}）")
+    # Already marked watched (the person is changing their rating): don't add a second play.
+    if found.action != "watched":
+        status, _ = await _trakt("POST", "/sync/history", token, json={"movies": [{**movie, "watched_at": now}]})
+        if status not in (200, 201):
+            raise SourceUnavailable(f"Trakt 暂时无法标记看过（HTTP {status}）")
+    logger.info(f"[movie-recommend] 看过了 for {row.profile_id}: {found.title} ({found.tmdb_id}) rating {value}{' (changed)' if found.action == 'watched' else ''}")
     found.action = "watched"
     found.rating = value
     found.acted_at = _now().replace(tzinfo=None)
