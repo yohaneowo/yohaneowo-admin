@@ -808,6 +808,10 @@ async def _ai_choice(db: AsyncSession, row: MovieSubscriberModel, mode: str, can
     if status is None or not 200 <= status < 300 or not isinstance(payload, dict):
         return None
     text = "".join(block.get("text", "") for block in payload.get("content") or [] if isinstance(block, dict))
+    if not text.strip():
+        blocks = [block.get("type") for block in payload.get("content") or [] if isinstance(block, dict)]
+        logger.warning(f"[movie-recommend] AI answered no text: stop_reason={payload.get('stop_reason')!r} blocks={blocks} usage={payload.get('usage')}")
+        return None
     match = re.search(r"\{.*\}", text, re.S)
     try:
         answer = json.loads(match.group(0)) if match else {}
