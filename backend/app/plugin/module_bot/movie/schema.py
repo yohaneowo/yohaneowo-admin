@@ -102,6 +102,9 @@ class ProfileFilm(BaseModel):
     publicScore: float | None = Field(default=None, ge=0, le=10)
     voteCount: int | None = Field(default=None, ge=0)
     genres: list[Annotated[str, Field(max_length=100)]] = Field(default_factory=list, max_length=20)
+    # Anime: AniList's community tags (top few) and the adaptation source (MANGA, ORIGINAL, VIDEO_GAME…).
+    tags: list[Annotated[str, Field(max_length=100)]] = Field(default_factory=list, max_length=10)
+    source: str | None = Field(default=None, max_length=40)
     imdbId: str | None = Field(default=None, pattern=r"^tt\d{5,12}$")
     imdbRating: float | None = Field(default=None, ge=0, le=10)
     imdbVotes: int | None = Field(default=None, ge=0)

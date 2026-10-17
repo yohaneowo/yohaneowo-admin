@@ -26,7 +26,13 @@ from .common import is_integer, is_number, read_cache, write_cache
 
 NAMESPACE = "anime_season"
 MAL_NAMESPACE = "mal"
-CACHE_VERSION = 1
+# 2: AniList genres, tags and source were added to the cached entry.
+CACHE_VERSION = 2
+# AniList tags kept per season: community-voted, this share of voters or more, never spoilers.
+TAG_MIN_RANK = 60
+TAGS_PER_SEASON = 5
+# TMDB puts this on every anime, so it says nothing on the anime tab (Chinese per MOVIE_LANGUAGE).
+ANIMATION_GENRES = {"动画", "動畫", "Animation"}
 WINDOW_DAYS = 20
 SEQUEL_WINDOW_DAYS = 120
 RECENT_CACHE_DAYS = 7
@@ -105,12 +111,20 @@ def slim_anilist(media: dict) -> dict:
         if node.get("id") and node.get("name"):
             staff.append({"role": "studio", "id": node["id"], "en": node["name"], "native": node["name"]})
     title = media.get("title") or {}
+    tags = sorted(
+        (t for t in media.get("tags") or [] if is_number(t.get("rank")) and t["rank"] >= TAG_MIN_RANK and t.get("name") and not t.get("isMediaSpoiler") and not t.get("isGeneralSpoiler")),
+        key=lambda t: -t["rank"],
+    )
     return {
         "id": media.get("id"),
         "idMal": media.get("idMal"),
         "score": _score(media.get("averageScore"), 10),
         "titleEn": title.get("english") or title.get("romaji"),
         "titleNative": title.get("native"),
+        # AniList's curated genre list (18 English names), its adaptation source and top tags.
+        "genres": [g for g in media.get("genres") or [] if isinstance(g, str)][:10],
+        "source": media.get("source") if isinstance(media.get("source"), str) else None,
+        "tags": [t["name"] for t in tags[:TAGS_PER_SEASON]],
         "staff": staff,
         "sequels": [
             {"id": node["id"], "start": (_fuzzy(node.get("startDate")) or date.min).isoformat()}
@@ -216,6 +230,48 @@ async def _mal_scores(ids: list[int], deadline: float) -> tuple[dict[str, dict],
         fresh[key] = {"score": _score((found or {}).get("score")), "votes": (found or {}).get("votes"), "fetchedAt": _now()}
     await write_cache(MAL_NAMESPACE, fresh)
     return {**cached, **fresh}, left
+
+
+def _classification(item: dict, found: dict) -> dict:
+    """The series' genres, tags and source: AniList's when the first season matched, otherwise
+    TMDB's genres without the "Animation" every anime carries."""
+    genres = [g for g in found.get("genres") or [] if isinstance(g, str)]
+    if not genres:
+        genres = [g for g in item.get("genres") or [] if g not in ANIMATION_GENRES] or list(item.get("genres") or [])
+    return {
+        "genre": genres[0] if genres else None,
+        "genres": genres[:20],
+        "tags": [t for t in found.get("tags") or [] if isinstance(t, str)][:10],
+        "source": found.get("source"),
+    }
+
+
+def _genre_rows(items: list[dict], mean: float | None) -> list[dict]:
+    """The section's genre summary (same shape as the show section's) from the items' genres."""
+    rows: dict[str, dict] = {}
+    for item in items:
+        rating = item.get("myRating")
+        for name in item.get("genres") or []:
+            row = rows.get(name) or {"name": name, "count": 0, "weight": 0.0, "ratedCount": 0}
+            row["count"] += 1
+            if is_number(rating) and mean is not None:
+                row["weight"] += rating - mean
+                row["ratedCount"] += 1
+            rows[name] = row
+    total = max(len(items), 1)
+    ordered = sorted(rows.values(), key=lambda row: (-row["count"], row["name"]))
+    return [
+        {
+            "id": index + 1,
+            "name": row["name"],
+            "count": row["count"],
+            "ratedCount": row["ratedCount"],
+            "interest": row["count"] / total,
+            "affinity": row["weight"] / row["ratedCount"] if row["ratedCount"] else None,
+            "average": mean + row["weight"] / row["ratedCount"] if row["ratedCount"] and mean is not None else None,
+        }
+        for index, row in enumerate(ordered)
+    ]
 
 
 def _people(entries: list[dict]) -> list[dict]:
@@ -337,7 +393,9 @@ async def enrich_anime(section: dict | None, budget_seconds: float = BUDGET_SECO
                 "anilistId": (first or {}).get("anilistId"),
                 "titleEn": (first or {}).get("titleEn") or item.get("titleEn"),
                 "staff": _people(entries),
+                **_classification(item, (first_entry or {}).get("anilist") or {}),
             }
         )
+    section["genres"] = _genre_rows(section["items"], section.get("mean"))
     section["people"] = [p for p in section["people"] if p["role"] in ("creator", "cast")] + _favourites(section["items"], section.get("mean"))
     return pending

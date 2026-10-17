@@ -18,7 +18,8 @@ MAX_RETRY_WAIT_SECONDS = 65
 _queue = asyncio.Lock()
 
 MEDIA_FIELDS = """
-  id idMal format episodes averageScore
+  id idMal format episodes averageScore source genres
+  tags { name rank isMediaSpoiler isGeneralSpoiler }
   startDate { year month day }
   title { romaji english native }
   studios(isMain: true) { nodes { id name } }
