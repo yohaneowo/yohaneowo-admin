@@ -3,7 +3,9 @@
 # compose.yaml; only the names that show up on Coolify's shared `coolify` network differ, because
 # the production stack is on that network too and aliases must not collide there:
 # - the website's dev deployment and the dev bot reach nginx as http://yohaneowo-admin-dev-web;
-# - Redis answers to admin-dev-redis.
+# - Redis answers to admin-dev-redis;
+# - the backend service is `backend-dev` (Compose puts a service's name on every network it joins,
+#   so a `backend` here would make nginx round-robin between this stack and production).
 # Keep the two files in step when changing services or environment.
 services:
     redis:
@@ -24,7 +26,7 @@ services:
                 aliases:
                     - admin-dev-redis
 
-    backend:
+    backend-dev:
         build:
             context: .
             dockerfile: docker/coolify/backend.Dockerfile
@@ -73,11 +75,13 @@ services:
         build:
             context: .
             dockerfile: docker/coolify/web.Dockerfile
+            args:
+                BACKEND_HOST: backend-dev
         restart: unless-stopped
         environment:
             SERVICE_FQDN_WEB_80: ''
         depends_on:
-            - backend
+            - backend-dev
         networks:
             default:
             coolify:
