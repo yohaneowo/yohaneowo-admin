@@ -45,8 +45,8 @@ GLOBAL_NAMESPACE = "recommend_global"
 # Where a pick is in its work, for the bot's "正在…" status (written per stage, read by polling).
 PROGRESS_NAMESPACE = "recommend_progress"
 STAGES = ("lists", "profile", "pools", "card")
-# 2: the pools carry a taste summary for the AI re-ranking.
-POOL_VERSION = 2
+# 2: the pools carry a taste summary for the AI re-ranking. 3: the backfill pool was added.
+POOL_VERSION = 3
 POOL_MAX_AGE = timedelta(hours=24)
 GLOBAL_MAX_AGE = timedelta(days=30)
 DISCOVER_MAX_AGE = timedelta(days=7)
