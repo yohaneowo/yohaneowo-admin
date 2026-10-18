@@ -12,7 +12,7 @@ from app.core.dependencies import AuthPermission, db_getter
 
 from ..internal_auth import verify_bot_token
 from . import bonds as bonds_module
-from . import people, recommend, service
+from . import people, recommend, service, studios
 from .auth import verify_site_token
 from .model import MovieSubscriberModel
 from .schema import BondsIn, CacheBatch, CacheKeys, DiscordId, PickIn, RatingsIn, RecordPatch, RegionIn, SiteUserId, SourceRequest, SubscriptionIn, TraktConnectIn, WatchedIn, WikimediaRequest
@@ -336,6 +336,24 @@ async def person_lookup(
         raise HTTPException(503, str(error)) from error
     if card is None:
         raise HTTPException(404, "找不到这位影人")
+    return SuccessResponse(data=card)
+
+
+@MovieWebsiteRouter.get("/studios/lookup")
+async def studio_lookup(
+    anilistId: Annotated[int | None, Query(ge=1)] = None,
+    bangumiId: Annotated[int | None, Query(ge=1)] = None,
+    lang: Annotated[Literal["zh", "en"], Query()] = "zh",
+):
+    """The studio card (动画制作): logo, description and best-known works with scores."""
+    if anilistId is None and bangumiId is None:
+        raise HTTPException(422, "需要 anilistId 或 bangumiId")
+    try:
+        card = await studios.lookup(anilistId, bangumiId, lang)
+    except SourceUnavailable as error:
+        raise HTTPException(503, str(error)) from error
+    if card is None:
+        raise HTTPException(404, "找不到这家公司")
     return SuccessResponse(data=card)
 
 

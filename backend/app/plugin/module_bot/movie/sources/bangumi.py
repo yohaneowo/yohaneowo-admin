@@ -42,11 +42,28 @@ async def search(db: AsyncSession, keyword: str, date_from: str, date_to: str) -
     return (body or {}).get("data") or []
 
 
-async def person_image(db: AsyncSession, person_id: int) -> str | None:
-    """A person's photo, or a company's logo (Bangumi lists studios as persons); None without one."""
+async def person(db: AsyncSession, person_id: int) -> dict | None:
+    """A person or company (Bangumi lists studios as persons): name, summary, images…"""
     body = await _request(db, f"/v0/persons/{person_id}")
-    url = ((body or {}).get("images") or {}).get("large") if isinstance(body, dict) else None
+    return body if isinstance(body, dict) else None
+
+
+async def person_image(db: AsyncSession, person_id: int) -> str | None:
+    """A person's photo, or a company's logo; None without one."""
+    url = ((await person(db, person_id) or {}).get("images") or {}).get("large")
     return url if isinstance(url, str) and url else None
+
+
+async def person_subjects(db: AsyncSession, person_id: int) -> list[dict]:
+    """Every entry the person or company worked on: [{id, name, name_cn, type, staff (the relation)}]."""
+    body = await _request(db, f"/v0/persons/{person_id}/subjects")
+    return body if isinstance(body, list) else []
+
+
+async def subject(db: AsyncSession, subject_id: int) -> dict | None:
+    """One entry: name_cn, date, rating {score, total}…"""
+    body = await _request(db, f"/v0/subjects/{subject_id}")
+    return body if isinstance(body, dict) else None
 
 
 async def persons(db: AsyncSession, subject_id: int) -> list[dict]:
