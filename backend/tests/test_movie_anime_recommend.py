@@ -331,3 +331,18 @@ def test_a_second_cour_inside_a_watched_tmdb_season_counts_as_seen():
     # A rated season counts as watched, whatever the episode count says.
     assert ar.seen_on_trakt({"type": "tv", "tmdbId": 500, "season": 2, "offset": 0}, 10, seen)
     assert not ar.seen_on_trakt({"type": "movie", "tmdbId": 500, "season": None, "offset": 0}, None, seen)
+
+
+def test_anime_films_already_watched_are_found_by_id_or_title_and_year():
+    snapshot = {"films": [{"id": 1014505, "title": "劇場版 OVERLORD 聖王國篇", "originalTitle": "劇場版「オーバーロード」聖王国編", "year": 2024}]}
+    trakt = [{"tmdbId": 372058, "title": "Your Name.", "year": 2016}]
+    ids, keys = ar.seen_films(snapshot, trakt)
+    film = {"format": "MOVIE", "year": 2024, "title": "オーバーロード 聖王国編", "titleEn": "OVERLORD: The Sacred Kingdom"}
+    # Not in the AniList → TMDB mapping: matched by title and year.
+    assert ar.film_seen(film, None, ids, keys)
+    assert not ar.film_seen({**film, "year": 2019}, None, ids, keys)
+    # By TMDB ID, whatever the title.
+    assert ar.film_seen({"format": "MOVIE", "year": 2016, "title": "君の名は。"}, {"type": "movie", "tmdbId": 372058}, ids, keys)
+    assert ar.film_seen({"format": "MOVIE", "year": 2016, "title": "x", "titleEn": "Your Name."}, None, ids, keys)
+    # Only films.
+    assert not ar.film_seen({**film, "format": "TV"}, None, ids, keys)

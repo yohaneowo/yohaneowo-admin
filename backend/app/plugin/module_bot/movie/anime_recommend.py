@@ -24,6 +24,7 @@ import math
 import random
 import re
 import time
+import unicodedata
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -50,7 +51,7 @@ TRAKT_SHOW_NAMESPACE = "anime_trakt_show"
 # The show rating a profile had before the bot first replaced it with its seasons' average, per
 # "profile:show" (restored when every season rating is gone).
 SHOW_RATING_NAMESPACE = "anime_show_rating_origin"
-POOL_VERSION = 2
+POOL_VERSION = 3
 POOL_MAX_AGE = timedelta(hours=24)
 AIRING_MAX_AGE = timedelta(hours=6)
 TRAKT_SHOW_MAX_AGE = timedelta(days=7)
@@ -331,6 +332,7 @@ def candidate(media: dict | None, **extra: Any) -> dict | None:
         "malId": media.get("idMal") if is_integer(media.get("idMal")) else None,
         "title": title.get("native") or title.get("romaji"),
         "titleEn": title.get("english") or title.get("romaji"),
+        "titleRomaji": title.get("romaji"),
         "format": media.get("format"),
         "status": media.get("status"),
         "episodes": media.get("episodes") if is_integer(media.get("episodes")) else None,
@@ -513,17 +515,62 @@ async def last_activities(token: str) -> dict:
 
 
 async def trakt_lists(token: str) -> dict:
-    """TMDB IDs on the watchlist (shows and films) and hidden from recommendations."""
-    shows, movies, hidden = await asyncio.gather(
+    """TMDB IDs on the watchlist (shows and films) and hidden from recommendations, and the films
+    watched or rated (anime films are films on Trakt, outside the snapshot's anime section)."""
+    shows, movies, hidden, watched, rated = await asyncio.gather(
         _trakt_all("/sync/watchlist/shows", token),
         _trakt_all("/sync/watchlist/movies", token),
         _trakt_all("/users/hidden/recommendations", token, {"type": "show"}),
+        _trakt_all("/sync/watched/movies", token),
+        _trakt_all("/sync/ratings/movies", token),
     )
 
     def ids(entries: list, kind: str) -> list[int]:
         return [tid for e in entries if is_integer(tid := (((e.get(kind) or {}).get("ids")) or {}).get("tmdb"))]
 
-    return {"watchlistShows": ids(shows, "show"), "watchlistMovies": ids(movies, "movie"), "hiddenShows": ids(hidden, "show")}
+    seen = [{"tmdbId": (movie.get("ids") or {}).get("tmdb"), "title": movie.get("title"), "year": movie.get("year")} for e in [*watched, *rated] if isinstance(movie := e.get("movie"), dict)]
+    return {"watchlistShows": ids(shows, "show"), "watchlistMovies": ids(movies, "movie"), "hiddenShows": ids(hidden, "show"), "seenMovies": seen}
+
+
+FILM_AFFIXES = re.compile(r"^(劇場版|剧场版|gekijouban|gekijōban)|(themovie|movie)$")
+
+
+def film_key(title: str | None) -> str:
+    """A film title for matching across AniList, Trakt and TMDB: width, case and punctuation
+    folded, "劇場版" / "the movie" dropped (劇場版「オーバーロード」聖王国編 = オーバーロード 聖王国編)."""
+    text = re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", title or "")).casefold()
+    return FILM_AFFIXES.sub("", text)
+
+
+def seen_films(snapshot: dict | None, seen_movies: list[dict]) -> tuple[set[int], set[tuple[str, int]]]:
+    """The films watched or rated: TMDB IDs, and (title key, year) for entries the AniList → TMDB
+    mapping doesn't know. From Trakt's lists plus the snapshot's films (original titles)."""
+    ids: set[int] = set()
+    keys: set[tuple[str, int]] = set()
+    films = [{**f, "tmdbId": f.get("id")} for f in (snapshot or {}).get("films") or [] if isinstance(f, dict)]
+    for film in [*seen_movies, *films]:
+        if is_integer(film.get("tmdbId")):
+            ids.add(film["tmdbId"])
+        year = film.get("year")
+        if not is_integer(year):
+            continue
+        for title in (film.get("title"), film.get("originalTitle"), film.get("titleEn")):
+            if key := film_key(title):
+                keys.add((key, year))
+    return ids, keys
+
+
+def film_seen(c: dict, target: dict | None, ids: set[int], keys: set[tuple[str, int]]) -> bool:
+    """Whether an anime film is one already watched or rated (by TMDB ID, else title and year ±1)."""
+    if c.get("format") != "MOVIE":
+        return False
+    if target and target["type"] == "movie" and target["tmdbId"] in ids:
+        return True
+    year = c.get("year")
+    if not is_integer(year):
+        return False
+    titles = {film_key(t) for t in (c.get("title"), c.get("titleEn"), c.get("titleRomaji"))} - {""}
+    return any((key, y) in keys for key in titles for y in (year - 1, year, year + 1))
 
 
 async def build_pools(row: MovieSubscriberModel, token: str) -> dict:
@@ -543,6 +590,7 @@ async def build_pools(row: MovieSubscriberModel, token: str) -> dict:
     # The watchlist lifts a candidate; the hidden list drops it (both through the TMDB mapping).
     targets = await anime_ids.lookup([c["anilistId"] for pool in pools.values() for c in pool])
     watch_tv, watch_movie, hidden = set(lists["watchlistShows"]), set(lists["watchlistMovies"]), set(lists["hiddenShows"])
+    film_ids, film_keys = seen_films(row.snapshot, lists.get("seenMovies") or [])
     for mode, pool in pools.items():
         kept = []
         for c in pool:
@@ -550,6 +598,8 @@ async def build_pools(row: MovieSubscriberModel, token: str) -> dict:
             if target and target["type"] == "tv" and target["tmdbId"] in hidden:
                 continue
             if target and seen_on_trakt(target, c.get("episodes"), profile["seenSeasons"]):
+                continue
+            if film_seen(c, target, film_ids, film_keys):
                 continue
             if target and target["tmdbId"] in (watch_tv if target["type"] == "tv" else watch_movie):
                 c["inWatchlist"] = True
