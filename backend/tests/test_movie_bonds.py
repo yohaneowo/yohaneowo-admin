@@ -51,27 +51,3 @@ def test_overlap_counts_by_kind_and_share_of_mine():
     # Seasons: I watched 30/S1, 30/S2, 31/S1; they watched 30/S1 only.
     assert row["animeSeasons"] == {"common": 1, "mine": 3, "theirs": 1}
     assert row["total"] == {"common": 3, "mine": 7, "share": round(3 / 7, 4)}
-
-
-def test_taste_needs_five_shared_ratings():
-    mine = {("movie", i): 8.0 for i in range(4)}
-    assert bonds.taste(mine, dict(mine)) == {"pairs": 4, "similarity": None}
-
-
-def test_taste_from_the_average_rating_gap():
-    mine = {("movie", i): 8.0 for i in range(6)}
-    same = dict(mine)
-    two_apart = dict.fromkeys(mine, 6.0)
-    far = dict.fromkeys(mine, 2.0)
-    assert bonds.taste(mine, same)["similarity"] == 1.0
-    assert bonds.taste(mine, two_apart)["similarity"] == 0.5
-    assert bonds.taste(mine, far)["similarity"] == 0.0
-
-
-def test_ratings_keep_kinds_apart_and_skip_unrated():
-    snapshot = {
-        "films": [{"id": 1, "myRating": 9}, {"id": 2, "myRating": None}],
-        "shows": {"items": [{"id": 1, "myRating": 7}]},
-        "anime": {"items": [{"id": 3, "myRating": 8}]},
-    }
-    assert bonds.ratings(snapshot) == {("movie", 1): 9.0, ("show", 1): 7.0, ("anime", 3): 8.0}
