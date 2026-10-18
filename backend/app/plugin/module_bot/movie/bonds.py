@@ -61,12 +61,52 @@ def overlap(mine: dict[str, set], theirs: dict[str, set]) -> dict[str, Any]:
     return out
 
 
+# 口味相似度: over the titles both have rated, 100% when the ratings match and 0% once they are
+# TASTE_SPREAD points apart on average; too few shared ratings say nothing, so it stays null.
+TASTE_SPREAD = 4
+TASTE_MIN_PAIRS = 5
+
+
+def ratings(snapshot: dict | None) -> dict[tuple[str, int], float]:
+    """(kind, id) → the profile's own rating, for every rated movie, show and anime title."""
+    snapshot = snapshot or {}
+    lists = {
+        "movie": snapshot.get("films"),
+        "show": (snapshot.get("shows") or {}).get("items"),
+        "anime": (snapshot.get("anime") or {}).get("items"),
+    }
+    out: dict[tuple[str, int], float] = {}
+    for kind, items in lists.items():
+        for item in items or []:
+            rating = item.get("myRating")
+            if is_integer(item.get("id")) and isinstance(rating, (int, float)) and not isinstance(rating, bool):
+                out[(kind, item["id"])] = float(rating)
+    return out
+
+
+def taste(mine: dict[tuple[str, int], float], theirs: dict[tuple[str, int], float]) -> dict[str, Any]:
+    pairs = [(mine[key], theirs[key]) for key in mine.keys() & theirs.keys()]
+    if len(pairs) < TASTE_MIN_PAIRS:
+        return {"pairs": len(pairs), "similarity": None}
+    gap = sum(abs(a - b) for a, b in pairs) / len(pairs)
+    return {"pairs": len(pairs), "similarity": round(max(0.0, 1 - gap / TASTE_SPREAD), 4)}
+
+
 def bonds(me: MovieSubscriberModel, others: list[MovieSubscriberModel]) -> list[dict]:
     """One row per other profile, most in common first."""
     mine = units(me.snapshot)
+    my_ratings = ratings(me.snapshot)
     rows = []
     for other in others:
         if other.profile_id == me.profile_id or not other.discord_id:
             continue
-        rows.append({"discordId": other.discord_id, "traktUser": other.trakt_user, "traktName": other.trakt_name, **overlap(mine, units(other.snapshot))})
+        rows.append(
+            {
+                "discordId": other.discord_id,
+                "traktUser": other.trakt_user,
+                "traktName": other.trakt_name,
+                **overlap(mine, units(other.snapshot)),
+                "taste": taste(my_ratings, ratings(other.snapshot)),
+            }
+        )
     return sorted(rows, key=lambda r: (-r["total"]["common"], r["traktUser"]))
