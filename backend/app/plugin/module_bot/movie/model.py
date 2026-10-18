@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Index, Integer, String, Text, true
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base_model import MappedBase
@@ -40,7 +40,7 @@ class MovieSubscriberModel(MappedBase):
     # /anime recommend: its own daily picks (test accounts), and whether this season's airing anime
     # are among the picks (the website's account settings switch; on by default).
     anime_pick_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    anime_airing: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    anime_airing: Mapped[bool] = mapped_column(Boolean, default=True)
     revision: Mapped[str] = mapped_column(String(36))
     snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Copied from the snapshot so the platform-wide rank is one indexed count, not a JSON scan.
