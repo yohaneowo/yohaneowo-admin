@@ -46,6 +46,9 @@ POOL_NAMESPACE = "anime_recommend_pool"
 GLOBAL_NAMESPACE = "anime_recommend_global"
 PROGRESS_NAMESPACE = "anime_recommend_progress"
 TRAKT_SHOW_NAMESPACE = "anime_trakt_show"
+# The show rating a profile had before the bot first replaced it with its seasons' average, per
+# "profile:show" (restored when every season rating is gone).
+SHOW_RATING_NAMESPACE = "anime_show_rating_origin"
 POOL_VERSION = 1
 POOL_MAX_AGE = timedelta(hours=24)
 AIRING_MAX_AGE = timedelta(hours=6)
@@ -963,6 +966,68 @@ async def _newest_movie_play(token: str, trakt_id: int) -> int | None:
     return None
 
 
+def average_rating(season_ratings: list[int]) -> int | None:
+    """The seasons' mean, rounded half up to Trakt's whole points (7.5 → 8)."""
+    return math.floor(sum(season_ratings) / len(season_ratings) + 0.5) if season_ratings else None
+
+
+def show_rating_plan(season_ratings: list[int], current: int | None, record: dict | None) -> tuple[str, int | None, dict | None]:
+    """What the show's own rating should become after a season rating changed through the bot:
+    (action, value, record to keep). The show carries the average of its season ratings, replacing
+    whatever it had (the first replaced value is remembered); with no season ratings left, the
+    remembered value comes back, or the rating goes. Actions: "set", "remove", "keep"."""
+    average = average_rating(season_ratings)
+    if average is not None:
+        kept = record or {"original": current}
+        return ("keep" if current == average else "set"), average, kept
+    if record is None:
+        return "keep", current, None
+    original = record.get("original")
+    if original == current:
+        return "keep", current, None
+    return ("set", original, None) if original is not None else ("remove", None, None)
+
+
+async def sync_show_rating(token: str, profile_id: str, target: dict) -> int | None:
+    """Puts the seasons' average on the show itself (Trakt keeps show and season ratings apart).
+    Returns the show's rating now (None: none). Season 0 (specials) doesn't count."""
+    show_id = target["traktId"]
+    seasons, shows = await asyncio.gather(_trakt_all("/sync/ratings/seasons", token), _trakt_all("/sync/ratings/shows", token))
+    season_ratings = [
+        int(e["rating"]) for e in seasons if (((e.get("show") or {}).get("ids") or {}).get("trakt")) == show_id and ((e.get("season") or {}).get("number") or 0) > 0 and is_number(e.get("rating"))
+    ]
+    current = next((int(e["rating"]) for e in shows if (((e.get("show") or {}).get("ids") or {}).get("trakt")) == show_id and is_number(e.get("rating"))), None)
+    key = f"{profile_id}:{show_id}"
+    # An empty marker (a record cleared earlier) means none.
+    record = (await read_cache(SHOW_RATING_NAMESPACE, [key])).get(key) or None
+    action, value, keep = show_rating_plan(season_ratings, current, record)
+    show = {"ids": {"trakt": show_id}}
+    if action == "set":
+        status, _ = await _trakt("POST", "/sync/ratings", token, json={"shows": [{**show, "rating": value, "rated_at": _now().strftime("%Y-%m-%dT%H:%M:%S.000Z")}]})
+        if status not in (200, 201):
+            raise SourceUnavailable(f"Trakt 暂时无法写入整部评分（HTTP {status}）")
+    elif action == "remove":
+        status, _ = await _trakt("POST", "/sync/ratings/remove", token, json={"shows": [show]})
+        if status not in (200, 201):
+            raise SourceUnavailable(f"Trakt 暂时无法删除整部评分（HTTP {status}）")
+    if keep != record:
+        # A record that is gone is stored as an empty marker (the cache has no delete).
+        await write_cache(SHOW_RATING_NAMESPACE, {key: keep or {}})
+    logger.info(f"[anime-recommend] show rating for {profile_id} / {show_id}: seasons {season_ratings} → {action} {value} (was {current})")
+    return value if action != "remove" else None
+
+
+async def _show_rating_after(token: str, profile_id: str, target: dict) -> int | None:
+    """sync_show_rating for a show target, never failing the action that called it."""
+    if target["type"] != "show":
+        return None
+    try:
+        return await sync_show_rating(token, profile_id, target)
+    except Exception as error:  # noqa: BLE001 - the season rating is written; the show's can wait
+        logger.warning(f"[anime-recommend] show rating not updated for {profile_id}: {error}")
+        return None
+
+
 async def watched(db: AsyncSession, row: MovieSubscriberModel, pick_id: str, rating: int | None) -> dict:
     """看过了. With a rating: the rating and the plays go to Trakt (remembered so they can be undone)
     and the pick is refunded. Without one: a rating already on Trakt marks it watched (no refund);
@@ -1006,11 +1071,22 @@ async def watched(db: AsyncSession, row: MovieSubscriberModel, pick_id: str, rat
     found.action, found.rating, found.own_rating = "watched", rating, True
     found.acted_at = _now().replace(tzinfo=None)
     await db.flush()
+    show_rating = await _show_rating_after(token, row.profile_id, target)
     await _drop_from_pool(row.profile_id, found.anilist_id)
     await _request_sync(row.profile_id)
     refunded = found.pick_id in refunded_ids(await _recent_picks(db, row.profile_id), found.day) and not changing
     logger.info(f"[anime-recommend] 看过了 for {row.profile_id}: {found.title} ({found.anilist_id}) rating {rating}{' (changed)' if changing else ''}{' (refunded)' if refunded else ''}")
-    return {"pickId": pick_id, "title": found.title, "action": found.action, "rated": True, "rating": rating, "own": True, "refunded": refunded, "remainingToday": await quota_left(db, row)}
+    return {
+        "pickId": pick_id,
+        "title": found.title,
+        "action": found.action,
+        "rated": True,
+        "rating": rating,
+        "own": True,
+        "refunded": refunded,
+        "showRating": show_rating,
+        "remainingToday": await quota_left(db, row),
+    }
 
 
 async def unrate(db: AsyncSession, row: MovieSubscriberModel, pick_id: str) -> dict:
@@ -1040,8 +1116,9 @@ async def unrate(db: AsyncSession, row: MovieSubscriberModel, pick_id: str) -> d
     found.history_id, found.history_added = None, False
     found.acted_at = _now().replace(tzinfo=None)
     await db.flush()
+    show_rating = await _show_rating_after(token, row.profile_id, target)
     await _request_sync(row.profile_id)
-    return {"pickId": pick_id, "title": found.title, "action": None, "remainingToday": await quota_left(db, row)}
+    return {"pickId": pick_id, "title": found.title, "action": None, "showRating": show_rating, "remainingToday": await quota_left(db, row)}
 
 
 def pick_out(row: AnimePickModel) -> dict:

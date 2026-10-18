@@ -189,3 +189,78 @@ def test_a_whole_pool_build_with_fake_sources():
     # A favourite studio's work in a blind genre goes to bridge, not comfort.
     assert 700 not in comfort and [c["anilistId"] for c in pools["bridge"]] == [700]
     assert [c["anilistId"] for c in pools["airing"]] == [600]
+
+
+def test_the_show_carries_its_seasons_average():
+    assert ar.average_rating([8, 7]) == 8  # 7.5 rounds half up
+    assert ar.average_rating([4, 3]) == 4
+    assert ar.average_rating([7, 7, 8]) == 7
+    assert ar.average_rating([]) is None
+    # First season rated through the bot: the show gets it, its own 9 is remembered.
+    assert ar.show_rating_plan([4], 9, None) == ("set", 4, {"original": 9})
+    # A later season: the average (4 and 2 → 3), the remembered original kept.
+    assert ar.show_rating_plan([4, 2], 4, {"original": 9}) == ("set", 3, {"original": 9})
+    # 4 and 3 average 3.5, which rounds to the 4 already there: nothing to write.
+    assert ar.show_rating_plan([4, 3], 4, {"original": 9}) == ("keep", 4, {"original": 9})
+    # Already right: nothing to write.
+    assert ar.show_rating_plan([4], 4, {"original": None}) == ("keep", 4, {"original": None})
+
+
+def test_without_season_ratings_the_original_comes_back():
+    assert ar.show_rating_plan([], 4, {"original": 9}) == ("set", 9, None)
+    assert ar.show_rating_plan([], 4, {"original": None}) == ("remove", None, None)
+    # Never touched by the bot: left alone.
+    assert ar.show_rating_plan([], 9, None) == ("keep", 9, None)
+
+
+def test_sync_show_rating_writes_the_average_and_remembers_the_original():
+    store = {}
+
+    async def read_cache(namespace, keys):
+        return {k: store[(namespace, k)] for k in keys if (namespace, k) in store}
+
+    async def write_cache(namespace, items):
+        store.update({(namespace, k): v for k, v in items.items()})
+
+    def season(show, number, rating):
+        return {"show": {"ids": {"trakt": show}}, "season": {"number": number}, "rating": rating}
+
+    lists = {
+        "/sync/ratings/seasons": [season(1420, 1, 8), season(1420, 2, 7), season(1420, 0, 1), season(999, 1, 2)],
+        "/sync/ratings/shows": [{"show": {"ids": {"trakt": 1420}}, "rating": 10}],
+    }
+    calls = []
+
+    async def trakt(method, path, token, params=None, json=None):
+        calls.append((path, json))
+        return 201, {}
+
+    with (
+        patch.object(ar, "_trakt_all", AsyncMock(side_effect=lambda path, token, params=None: lists[path])),
+        patch.object(ar, "_trakt", trakt),
+        patch.object(ar, "read_cache", read_cache),
+        patch.object(ar, "write_cache", write_cache),
+    ):
+        value = asyncio.run(ar.sync_show_rating("token", "p", {"type": "show", "traktId": 1420}))
+    # Specials and other shows don't count: (8 + 7) / 2 = 7.5 → 8.
+    assert value == 8
+    assert calls[0][0] == "/sync/ratings" and calls[0][1]["shows"][0]["rating"] == 8
+    assert store[("anime_show_rating_origin", "p:1420")] == {"original": 10}
+
+
+def test_a_cleared_record_never_removes_the_persons_own_show_rating():
+    store = {("anime_show_rating_origin", "p:1420"): {}}
+
+    async def read_cache(namespace, keys):
+        return {k: store[(namespace, k)] for k in keys if (namespace, k) in store}
+
+    trakt = AsyncMock(return_value=(201, {}))
+    lists = {"/sync/ratings/seasons": [], "/sync/ratings/shows": [{"show": {"ids": {"trakt": 1420}}, "rating": 9}]}
+    with (
+        patch.object(ar, "_trakt_all", AsyncMock(side_effect=lambda path, token, params=None: lists[path])),
+        patch.object(ar, "_trakt", trakt),
+        patch.object(ar, "read_cache", read_cache),
+        patch.object(ar, "write_cache", AsyncMock()),
+    ):
+        assert asyncio.run(ar.sync_show_rating("token", "p", {"type": "show", "traktId": 1420})) == 9
+    trakt.assert_not_awaited()
