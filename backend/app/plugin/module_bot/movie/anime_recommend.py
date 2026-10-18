@@ -463,8 +463,11 @@ def _airing_pool(profile: dict, airing: list[dict]) -> list[dict]:
     for work in airing:
         c = dict(work)
         if _fits(c, profile):
-            quality = bayes(c["score"], c["popularity"]) if c["score"] else 0.5 * _clamp(c["popularity"] / top)
-            c["score"] = 0.6 * _cosine(_vector(c["genres"], c["tags"]), profile["taste"]) + 0.4 * quality
+            # Early in a season most shows have no score yet, so how many people follow it weighs
+            # as much as the taste (else obscure shows that happen to match a tag come first).
+            buzz = math.sqrt(_clamp(c["popularity"] / top))
+            quality = 0.5 * bayes(c["score"], c["popularity"]) + 0.5 * buzz if c["score"] else buzz
+            c["score"] = 0.45 * _cosine(_vector(c["genres"], c["tags"]), profile["taste"]) + 0.55 * quality
             pool.append(c)
     return _scored(pool)
 
