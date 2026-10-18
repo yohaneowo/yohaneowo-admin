@@ -220,7 +220,7 @@ def test_bangumi_down_still_lists_anilist_works_and_retries_sooner():
     world = World(pages=[_studio_page(_node(1, "DEATH NOTE", 2006, mal_id=1535))], bangumi_down=True, mal={"1535": {"score": 8.62}})
     done = world.run(_finished(STUDIO))
     assert [(w["title"], w["malScore"], w["bangumiScore"]) for w in done["works"]] == [("DEATH NOTE", 8.62, None)]
-    assert world.store[("credit_card", STUDIO.key)]["partial"] is True
+    assert world.store[("credit_card_v2", STUDIO.key)]["partial"] is True
 
 
 def test_unknown_card_is_none():
@@ -263,8 +263,16 @@ def test_a_voice_actor_lists_roles_with_characters_merged_per_anime():
     world = World(
         pages=[
             _voice_page(
-                {"characterRole": "SUPPORTING", "characters": [{"name": {"native": "枢木スザク"}}], "node": _node(1, "コードギアス", 2006)},
-                {"characterRole": "MAIN", "characters": [{"name": {"native": "ジノ"}}], "node": _node(1, "コードギアス", 2006)},
+                {
+                    "characterRole": "SUPPORTING",
+                    "characters": [{"name": {"native": "枢木スザク"}, "image": {"large": "https://s4.anilist.co/file/anilistcdn/character/large/b1.png"}}],
+                    "node": _node(1, "コードギアス", 2006),
+                },
+                {
+                    "characterRole": "MAIN",
+                    "characters": [{"name": {"native": "ジノ"}, "image": {"large": "https://s4.anilist.co/file/anilistcdn/character/large/default.jpg"}}],
+                    "node": _node(1, "コードギアス", 2006),
+                },
                 {"characterRole": "SUPPORTING", "characters": [{"name": {"full": "Someone"}}], "node": _node(2, "作品B", 2010)},
             )
         ],
@@ -273,8 +281,35 @@ def test_a_voice_actor_lists_roles_with_characters_merged_per_anime():
     )
     done = world.run(_finished(Who("cast", 95079, 4015)))
     first, second = done["works"]
-    assert (second["title"], second["characters"], second["main"], second["bangumiId"]) == ("反叛的鲁路修", ["枢木スザク", "ジノ"], True, 8)
-    assert (first["characters"], first["main"]) == (["Someone"], False)
+    assert (second["title"], second["main"], second["bangumiId"]) == ("反叛的鲁路修", True, 8)
+    # Each character keeps its picture (AniList's placeholder counts as none) and its own role.
+    assert second["characters"] == [
+        {"name": "枢木スザク", "image": "https://s4.anilist.co/file/anilistcdn/character/large/b1.png", "main": False},
+        {"name": "ジノ", "image": None, "main": True},
+    ]
+    assert (first["characters"], first["main"]) == ([{"name": "Someone", "image": None, "main": False}], False)
+
+
+def test_a_bangumi_only_voice_actor_lists_bangumi_roles():
+    world = World(
+        characters=[
+            {
+                "name": "枢木スザク",
+                "staff": "主角",
+                "subject_id": 8,
+                "subject_type": 2,
+                "subject_name": "コードギアス",
+                "subject_name_cn": "反叛的鲁路修",
+                "images": {"large": "https://lain.bgm.tv/pic/crt/l/2.jpg"},
+            },
+            {"name": "某人", "staff": "配角", "subject_id": 8, "subject_type": 2, "subject_name": "コードギアス", "subject_name_cn": "反叛的鲁路修", "images": {}},
+            {"name": "小说角色", "staff": "主角", "subject_id": 9, "subject_type": 1, "subject_name": "小说", "subject_name_cn": None},
+        ]
+    )
+    done = world.run(_finished(Who("cast", None, 4015)))
+    (work,) = done["works"]
+    assert (work["title"], work["main"]) == ("反叛的鲁路修", True)
+    assert work["characters"] == [{"name": "枢木スザク", "image": "https://lain.bgm.tv/pic/crt/l/2.jpg", "main": True}, {"name": "某人", "image": None, "main": False}]
 
 
 def test_voice_actor_identity_is_found_by_exact_name_and_cached():

@@ -57,7 +57,8 @@ BANGUMI_RELATIONS = {
     "chiefAnimationDirector": {"总作画监督"},
 }
 
-CARD_NAMESPACE = "credit_card"
+# v2: a voice actor's characters carry their picture and whether each is a main character.
+CARD_NAMESPACE = "credit_card_v2"
 INFO_NAMESPACE = "credit_info"
 IDENTITY_NAMESPACE = "anime_cast_identity"
 MATCH_NAMESPACE = "studio_work_bangumi"
@@ -85,7 +86,7 @@ STAFF_QUERY = f"""query ($id: Int, $page: Int) {{ Staff(id: $id) {{
 VOICE_QUERY = f"""query ($id: Int, $page: Int) {{ Staff(id: $id) {{
   characterMedia(sort: [START_DATE_DESC], page: $page, perPage: 50) {{
     pageInfo {{ hasNextPage }}
-    edges {{ characterRole characters {{ name {{ full native }} }} node {{ {MEDIA_FIELDS} }} }} }} }} }}"""
+    edges {{ characterRole characters {{ name {{ full native }} image {{ large }} }} node {{ {MEDIA_FIELDS} }} }} }} }} }}"""
 STUDIO_INFO_QUERY = """query ($id: Int) { Studio(id: $id) { name } }"""
 STAFF_INFO_QUERY = """query ($id: Int) { Staff(id: $id) { name { full native } description image { large } } }"""
 STAFF_SEARCH_QUERY = """query ($s: String) { Page(perPage: 5) { staff(search: $s) { id name { full native alternative } } } }"""
@@ -261,6 +262,27 @@ def _work(node: dict, extra: dict | None = None) -> dict | None:
     }
 
 
+def _picture(url: Any) -> str | None:
+    """A character's picture: https only, AniList's placeholder counts as none."""
+    return url if isinstance(url, str) and url.startswith("https://") and "/default." not in url else None
+
+
+def _add_characters(work: dict, characters: list[dict]) -> None:
+    """Merge characters into a work (one entry per name; main if any credit says so)."""
+    by_name = {c["name"]: c for c in work["characters"]}
+    for character in characters:
+        if not character["name"]:
+            continue
+        known = by_name.get(character["name"])
+        if known:
+            known["main"] = known["main"] or character["main"]
+            known["image"] = known["image"] or character["image"]
+        else:
+            by_name[character["name"]] = character
+            work["characters"].append(character)
+    work["main"] = any(c["main"] for c in work["characters"])
+
+
 def _base_role(role: Any) -> str:
     return re.sub(r"\s*\(.*\)$", "", role or "").strip()
 
@@ -281,13 +303,19 @@ async def _anilist_pages(who: Who, publish) -> list[dict]:
             for edge in media.get("edges") or []:
                 node = edge.get("node") or {}
                 if who.kind == "cast":
-                    characters = [((c or {}).get("name") or {}).get("native") or ((c or {}).get("name") or {}).get("full") for c in edge.get("characters") or []]
                     main = edge.get("characterRole") == "MAIN"
+                    characters = [
+                        {
+                            "name": ((c or {}).get("name") or {}).get("native") or ((c or {}).get("name") or {}).get("full"),
+                            "image": _picture(((c or {}).get("image") or {}).get("large")),
+                            "main": main,
+                        }
+                        for c in edge.get("characters") or []
+                    ]
                     work = works.get(node.get("id")) or _work(node, {"characters": [], "main": False})
                     if not work:
                         continue
-                    work["characters"] = list(dict.fromkeys([*work["characters"], *(c for c in characters if c)]))
-                    work["main"] = work["main"] or main
+                    _add_characters(work, characters)
                     works[work["anilistId"]] = work
                 elif _base_role(edge.get("staffRole")) in ANILIST_ROLES[who.kind] and (work := _work(node)) and work["anilistId"] not in works:
                     works[work["anilistId"]] = work
@@ -309,9 +337,8 @@ async def _bangumi_entries(who: Who) -> list[dict]:
                 role["subject_id"],
                 {"id": role["subject_id"], "name": role.get("subject_name"), "nameCn": role.get("subject_name_cn") or None, "relation": "cast", "characters": [], "main": False},
             )
-            if role.get("name"):
-                entry["characters"].append(role["name"])
-            entry["main"] = entry["main"] or role.get("staff") == "主角"
+            images = role.get("images") or {}
+            _add_characters(entry, [{"name": role.get("name"), "image": _picture(images.get("large") or images.get("grid")), "main": role.get("staff") == "主角"}])
         return list(entries.values())
     subjects = await _bangumi(bangumi.person_subjects, who.bangumi_id)
     return [{"id": s["id"], "name": s.get("name"), "nameCn": s.get("name_cn") or None, "relation": s.get("staff")} for s in subjects if s.get("type") == bangumi.ANIME and is_integer(s.get("id"))]
@@ -516,7 +543,8 @@ def _filling_now(key: str) -> bool:
 
 
 async def works(who: Who, lang: str = "zh") -> dict | None:
-    """{works: [{anilistId, bangumiId, title, year, bangumiScore, malScore, characters?, main?}],
+    """{works: [{anilistId, bangumiId, title, year, bangumiScore, malScore, characters?: [{name,
+    image, main}], main?}],
     building, scoresPending}: whatever is known right now, newest first. Never waits on a source;
     missing parts are fetched in the background and show up on a later poll. None when nothing is
     known about the card."""
