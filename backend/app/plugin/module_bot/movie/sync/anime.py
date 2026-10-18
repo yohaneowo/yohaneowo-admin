@@ -20,6 +20,7 @@ from typing import Any
 from app.core.database import async_db_session
 from app.core.logger import logger
 
+from ..schema import PHOTO_PATTERN
 from ..sources import anilist, bangumi, mal
 from ..sources.base import SourceUnavailable
 from .common import is_integer, is_number, read_cache, write_cache
@@ -44,6 +45,11 @@ MAL_MAX_FAILURES = 3
 BANGUMI_RETRY_HOURS = 6
 BUDGET_SECONDS = 240
 FAVOURITES_PER_ROLE = 8
+# Photos of the favourite staff (and studio logos), per source ID: a found photo is kept
+# PHOTO_DAYS, a missing one is looked up again after PHOTO_MISSING_DAYS.
+PHOTO_NAMESPACE = "anime_staff_photo"
+PHOTO_DAYS = 30
+PHOTO_MISSING_DAYS = 7
 
 # The roles shown for anime, in display order.
 ROLES = ("director", "original", "studio", "music", "chiefAnimationDirector")
@@ -306,13 +312,20 @@ def _people(entries: list[dict]) -> list[dict]:
                     twin = from_bangumi[index]
                 if twin:
                     from_bangumi = [p for p in from_bangumi if p is not twin]
-                record = {"role": role, "id": person["id"], "name": twin["zh"] if twin else person.get("native") or person["en"], "nameEn": person["en"]}
+                record = {
+                    "role": role,
+                    "id": person["id"],
+                    "name": twin["zh"] if twin else person.get("native") or person["en"],
+                    "nameEn": person["en"],
+                    # Kept for the photo lookup: Bangumi has studio logos AniList lacks.
+                    "bangumiId": twin["id"] if twin else None,
+                }
                 if not any(r["id"] == record["id"] or _same(r["name"], record["name"]) for r in merged):
                     merged.append(record)
             for person in from_bangumi:
                 if not any(_same(r["name"], person["zh"]) for r in merged):
                     # Bangumi-only: a negative ID keeps it apart from AniList's.
-                    merged.append({"role": role, "id": -person["id"], "name": person["zh"], "nameEn": None})
+                    merged.append({"role": role, "id": -person["id"], "name": person["zh"], "nameEn": None, "bangumiId": person["id"]})
         people.extend(merged)
     return people
 
@@ -327,7 +340,10 @@ def _favourites(items: list[dict], mean: float | None) -> list[dict]:
             continue
         for person in item.get("staff") or []:
             key = f"{person['role']}:{person['id']}"
-            record = records.setdefault(key, {"id": person["id"], "name": person["name"], "nameEn": person.get("nameEn"), "role": person["role"], "photo": None, "films": []})
+            record = records.setdefault(
+                key,
+                {"id": person["id"], "name": person["name"], "nameEn": person.get("nameEn"), "role": person["role"], "bangumiId": person.get("bangumiId"), "photo": None, "films": []},
+            )
             if not any(f["id"] == item["id"] for f in record["films"]):
                 record["films"].append({"id": item["id"], "title": item["title"], "rating": item["myRating"]})
     favourites = []
@@ -337,6 +353,66 @@ def _favourites(items: list[dict], mean: float | None) -> list[dict]:
         if count >= 2 and average >= mean + 0.3:
             favourites.append({**record, "count": count, "average": average, "films": sorted(record["films"], key=lambda f: -f["rating"])[:3]})
     return [p for role in ROLES for p in sorted((p for p in favourites if p["role"] == role), key=lambda p: (-p["average"], -p["count"]))[:FAVOURITES_PER_ROLE]]
+
+
+def _anilist_staff_id(person: dict) -> int | None:
+    """AniList staff IDs are positive; studios are AniList studios, which have no image."""
+    return person["id"] if person["role"] != "studio" and is_integer(person.get("id")) and person["id"] > 0 else None
+
+
+def _usable_photo(url: str | None) -> str | None:
+    """Only URLs the snapshot schema accepts; anything else (a new CDN path) counts as no photo."""
+    return url if isinstance(url, str) and re.match(PHOTO_PATTERN, url) else None
+
+
+def _fresh_photo(entry: dict | None) -> bool:
+    if not entry:
+        return False
+    days = PHOTO_DAYS if entry.get("photo") else PHOTO_MISSING_DAYS
+    return str(entry.get("fetchedAt", "")) >= (datetime.now(UTC) - timedelta(days=days)).isoformat()
+
+
+async def attach_photos(people: list[dict], deadline: float) -> None:
+    """Fill `photo` on the favourite staff in place: AniList's photo first, else Bangumi's photo
+    or studio logo. One AniList call covers everyone; Bangumi is asked person by person, only for
+    those AniList can't picture. Unreachable sources are skipped and tried at the next sync."""
+    anilist_keys = {f"anilist:{sid}": sid for p in people if (sid := _anilist_staff_id(p))}
+    bangumi_keys = {f"bangumi:{p['bangumiId']}": p["bangumiId"] for p in people if is_integer(p.get("bangumiId"))}
+    cache = await read_cache(PHOTO_NAMESPACE, [*anilist_keys, *bangumi_keys])
+    fresh: dict[str, dict] = {}
+
+    stale_anilist = [sid for key, sid in anilist_keys.items() if not _fresh_photo(cache.get(key))]
+    if stale_anilist:
+        try:
+            async with async_db_session() as db, db.begin():
+                found = await anilist.staff_images(db, stale_anilist)
+            for sid in stale_anilist:
+                fresh[f"anilist:{sid}"] = cache[f"anilist:{sid}"] = {"photo": _usable_photo(found.get(sid)), "fetchedAt": _now()}
+        except SourceUnavailable as error:
+            logger.warning(f"[movie-sync] AniList staff photos skipped: {error}")
+
+    def anilist_photo(person: dict) -> str | None:
+        sid = _anilist_staff_id(person)
+        return (cache.get(f"anilist:{sid}") or {}).get("photo") if sid else None
+
+    for person in people:
+        if anilist_photo(person) or not is_integer(person.get("bangumiId")):
+            continue
+        key = f"bangumi:{person['bangumiId']}"
+        if _fresh_photo(cache.get(key)) or time.monotonic() > deadline:
+            continue
+        try:
+            async with async_db_session() as db, db.begin():
+                photo = await bangumi.person_image(db, person["bangumiId"])
+        except SourceUnavailable as error:
+            logger.warning(f"[movie-sync] Bangumi staff photos skipped: {error}")
+            break
+        fresh[key] = cache[key] = {"photo": _usable_photo(photo), "fetchedAt": _now()}
+
+    await write_cache(PHOTO_NAMESPACE, fresh)
+    for person in people:
+        bangumi_id = person.get("bangumiId")
+        person["photo"] = anilist_photo(person) or ((cache.get(f"bangumi:{bangumi_id}") or {}).get("photo") if is_integer(bangumi_id) else None)
 
 
 async def enrich_anime(section: dict | None, budget_seconds: float = BUDGET_SECONDS) -> bool:
@@ -420,5 +496,7 @@ async def enrich_anime(section: dict | None, budget_seconds: float = BUDGET_SECO
             }
         )
     section["genres"] = _genre_rows(section["items"], section.get("mean"))
-    section["people"] = [p for p in section["people"] if p["role"] in ("creator", "cast")] + _favourites(section["items"], section.get("mean"))
+    staff = _favourites(section["items"], section.get("mean"))
+    await attach_photos(staff, deadline + 60)
+    section["people"] = [p for p in section["people"] if p["role"] in ("creator", "cast")] + staff
     return pending

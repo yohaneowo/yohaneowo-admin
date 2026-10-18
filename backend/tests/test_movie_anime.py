@@ -1,6 +1,7 @@
 """Anime series: Bangumi / AniList / MyAnimeList data on the anime section."""
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, patch
 
 from app.plugin.module_bot.movie.schema import ShowSection
@@ -105,6 +106,7 @@ def test_enrich_fills_scores_staff_and_favourites():
     entries = {(1, 1): _entry(101, 201, 301, 8.0), (1, 2): _entry(102, 202, 302, 9.0), (2, 1): _entry(103, 203, 303, 7.0)}
     match = AsyncMock(side_effect=lambda item, season, previous, current=None, bangumi_ok=True: (entries[(item["id"], season["number"])], False))
     mal_score = AsyncMock(side_effect=lambda db, mal_id: {"score": mal_id / 25, "votes": 5})
+    staff_images = AsyncMock(return_value={7: "https://s4.anilist.co/file/anilistcdn/staff/large/n7-abc.jpg"})
 
     class Session:
         async def __aenter__(self):
@@ -122,6 +124,7 @@ def test_enrich_fills_scores_staff_and_favourites():
         patch.object(anime, "write_cache", write_cache),
         patch.object(anime, "match_season", match),
         patch.object(anime.mal, "score", mal_score),
+        patch.object(anime.anilist, "staff_images", staff_images),
         patch.object(anime, "async_db_session", Session),
     ):
         assert asyncio.run(anime.enrich_anime(section)) is False
@@ -133,6 +136,7 @@ def test_enrich_fills_scores_staff_and_favourites():
         assert [(p["role"], p["name"], p["nameEn"]) for p in first["staff"]] == [("director", "監督", "Dee Rector")]
         # Both rated series share the director (average 8.5 ≥ mean 7.0 + 0.3).
         assert [(p["role"], p["count"]) for p in section["people"]] == [("director", 2)]
+        assert section["people"][0]["photo"] == "https://s4.anilist.co/file/anilistcdn/staff/large/n7-abc.jpg"
         ShowSection.model_validate(section)
 
         # Cached now: a second run looks nothing up.
@@ -198,3 +202,88 @@ def test_mal_scores_skip_one_failure_but_stop_when_down():
         with patch.object(anime.mal, "score", down):
             asyncio.run(anime._mal_scores([4, 5, 6, 7], float("inf")))
         assert down.await_count == anime.MAL_MAX_FAILURES
+
+
+class _NoSession:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def begin(self):
+        return self
+
+
+def test_staff_photos_prefer_anilist_then_bangumi_and_are_cached():
+    store = {}
+
+    async def read_cache(namespace, keys):
+        return {k: store[(namespace, k)] for k in keys if (namespace, k) in store}
+
+    async def write_cache(namespace, items):
+        store.update({(namespace, k): v for k, v in items.items()})
+
+    people = [
+        # AniList has a photo: Bangumi isn't asked.
+        {"role": "director", "id": 1, "bangumiId": 11, "photo": None},
+        # AniList shows its placeholder: Bangumi's photo instead.
+        {"role": "music", "id": 2, "bangumiId": 12, "photo": None},
+        # Studios: AniList studios have no image, so always Bangumi's logo.
+        {"role": "studio", "id": 3, "bangumiId": 13, "photo": None},
+        # Bangumi-only (negative ID) without a photo anywhere.
+        {"role": "chiefAnimationDirector", "id": -14, "bangumiId": 14, "photo": None},
+    ]
+    staff_images = AsyncMock(return_value={1: "https://s4.anilist.co/file/anilistcdn/staff/large/n1-abc.png", 2: None})
+    person_image = AsyncMock(side_effect=lambda db, pid: {12: "https://lain.bgm.tv/pic/crt/l/ab/cd/12_prsn_x.jpg?r=1700000000", 13: "https://lain.bgm.tv/pic/crt/l/ef/01/13_prsn_y.jpg"}.get(pid))
+    with (
+        patch.object(anime, "read_cache", read_cache),
+        patch.object(anime, "write_cache", write_cache),
+        patch.object(anime.anilist, "staff_images", staff_images),
+        patch.object(anime.bangumi, "person_image", person_image),
+        patch.object(anime, "async_db_session", _NoSession),
+    ):
+        asyncio.run(anime.attach_photos(people, time.monotonic() + 60))
+        assert [p["photo"] for p in people] == [
+            "https://s4.anilist.co/file/anilistcdn/staff/large/n1-abc.png",
+            "https://lain.bgm.tv/pic/crt/l/ab/cd/12_prsn_x.jpg?r=1700000000",
+            "https://lain.bgm.tv/pic/crt/l/ef/01/13_prsn_y.jpg",
+            None,
+        ]
+        # One AniList call for the people (the studio isn't an AniList staff ID).
+        assert staff_images.await_args.args[1] == [1, 2]
+        assert sorted(call.args[1] for call in person_image.await_args_list) == [12, 13, 14]
+
+        # Cached: a second run asks nobody and gives the same photos.
+        staff_images.reset_mock()
+        person_image.reset_mock()
+        again = [{**p, "photo": None} for p in people]
+        asyncio.run(anime.attach_photos(again, time.monotonic() + 60))
+        assert staff_images.await_count == 0 and person_image.await_count == 0
+        assert [p["photo"] for p in again] == [p["photo"] for p in people]
+
+
+def test_staff_photos_survive_sources_being_down():
+    async def read_cache(namespace, keys):
+        return {}
+
+    async def write_cache(namespace, items):
+        pass
+
+    people = [{"role": "director", "id": 1, "bangumiId": 11, "photo": None}]
+    with (
+        patch.object(anime, "read_cache", read_cache),
+        patch.object(anime, "write_cache", write_cache),
+        patch.object(anime.anilist, "staff_images", AsyncMock(side_effect=SourceUnavailable("down"))),
+        patch.object(anime.bangumi, "person_image", AsyncMock(side_effect=SourceUnavailable("down"))),
+        patch.object(anime, "async_db_session", _NoSession),
+    ):
+        asyncio.run(anime.attach_photos(people, time.monotonic() + 60))
+    assert people[0]["photo"] is None
+
+
+def test_unexpected_photo_urls_count_as_none():
+    assert anime._usable_photo("https://s4.anilist.co/file/anilistcdn/staff/large/n1-a.png")
+    assert anime._usable_photo("https://lain.bgm.tv/pic/crt/l/ab/cd/1_prsn_x.jpg?r=1")
+    assert anime._usable_photo("http://lain.bgm.tv/pic/crt/l/ab/cd/1_prsn_x.jpg") is None
+    assert anime._usable_photo("https://example.com/a.jpg") is None

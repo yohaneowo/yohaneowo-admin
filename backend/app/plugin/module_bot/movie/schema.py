@@ -92,13 +92,21 @@ class Film(BaseModel):
     rating: float = Field(ge=1, le=10)
 
 
+# People's photos: TMDB profiles, and for anime staff AniList photos or Bangumi photos / studio logos.
+PHOTO_PATTERN = (
+    r"^https://(?:image\.tmdb\.org/t/p/w185/[A-Za-z0-9._-]+"
+    r"|s4\.anilist\.co/file/anilistcdn/staff/large/[A-Za-z0-9._-]+"
+    r"|lain\.bgm\.tv/pic/crt/l/[A-Za-z0-9/._-]+(?:\?r=\d+)?)$"
+)
+
+
 class Person(BaseModel):
     id: int
     name: str = Field(max_length=255)
     # The person's own name for the English interface (TMDB original_name; AniList for anime staff).
     nameEn: str | None = Field(default=None, max_length=255)
     role: Literal["director", "cast"]
-    photo: str | None = Field(default=None, pattern=r"^https://image\.tmdb\.org/t/p/w185/[A-Za-z0-9._-]+$")
+    photo: str | None = Field(default=None, pattern=PHOTO_PATTERN)
     average: float = Field(ge=1, le=10)
     count: int = Field(ge=2)
     films: list[Film] = Field(max_length=3)

@@ -42,6 +42,13 @@ async def search(db: AsyncSession, keyword: str, date_from: str, date_to: str) -
     return (body or {}).get("data") or []
 
 
+async def person_image(db: AsyncSession, person_id: int) -> str | None:
+    """A person's photo, or a company's logo (Bangumi lists studios as persons); None without one."""
+    body = await _request(db, f"/v0/persons/{person_id}")
+    url = ((body or {}).get("images") or {}).get("large") if isinstance(body, dict) else None
+    return url if isinstance(url, str) and url else None
+
+
 async def persons(db: AsyncSession, subject_id: int) -> list[dict]:
     """Staff and companies of an entry: [{id, name, relation (e.g. 导演), type (1 person, 2 company)}]."""
     body = await _request(db, f"/v0/subjects/{subject_id}/persons")

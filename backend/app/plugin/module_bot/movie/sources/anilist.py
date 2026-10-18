@@ -56,6 +56,20 @@ async def search(db: AsyncSession, title: str, date_from: int, date_to: int) -> 
     return ((data or {}).get("Page") or {}).get("media") or []
 
 
+STAFF_IMAGES = """query ($ids: [Int]) { Page(perPage: 50) { staff(id_in: $ids) { id image { large } } } }"""
+
+
+async def staff_images(db: AsyncSession, staff_ids: list[int]) -> dict[int, str | None]:
+    """Each staff member's photo (None for AniList's placeholder), up to 50 IDs per call."""
+    data = await query(db, STAFF_IMAGES, {"ids": staff_ids[:50]})
+    out: dict[int, str | None] = {}
+    for node in ((data or {}).get("Page") or {}).get("staff") or []:
+        url = ((node or {}).get("image") or {}).get("large")
+        if isinstance(node.get("id"), int):
+            out[node["id"]] = url if isinstance(url, str) and "/default." not in url else None
+    return out
+
+
 async def media(db: AsyncSession, anilist_id: int) -> dict | None:
     data = await query(db, BY_ID, {"id": anilist_id})
     return (data or {}).get("Media")
