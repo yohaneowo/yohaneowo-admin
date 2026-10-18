@@ -239,6 +239,15 @@ async def website_statistics(site_user_id: SiteUserId, db: Db, discordId: Discor
     return SuccessResponse(data=_website_view(row, platform))
 
 
+@MovieWebsiteRouter.get("/users/{site_user_id}/view")
+async def website_view_statistics(site_user_id: SiteUserId, db: Db, discordId: DiscordId | None = None):
+    """Someone else's statistics page (or the viewer's own data for the comparison radar):
+    the same view as above without the claim and merge that only the owner's visit may do."""
+    row = await service.peek_profile(db, site_user_id, discordId)
+    platform = await service.watched_rank(db, row) if row and row.active else None
+    return SuccessResponse(data=_website_view(row, platform))
+
+
 @MovieWebsiteRouter.get("/trakt/authorize")
 async def trakt_authorize(
     redirectUri: Annotated[str, Query(max_length=500, pattern=r"^https?://")],

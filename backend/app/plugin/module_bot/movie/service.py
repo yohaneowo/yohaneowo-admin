@@ -133,6 +133,18 @@ async def site_profile(db: AsyncSession, site_user_id: str, discord_id: str | No
     return None
 
 
+async def peek_profile(db: AsyncSession, site_user_id: str, discord_id: str | None):
+    """Read-only: the profile behind a website account someone else is looking at. Unlike
+    site_profile it never claims a bot profile or merges two; a bot profile no other website
+    account owns is shown as theirs."""
+    row = await by_site_user(db, site_user_id)
+    if row is None and discord_id:
+        other = await by_discord(db, discord_id)
+        if other is not None and other.site_user_id in (None, site_user_id):
+            row = other
+    return row
+
+
 class TraktTaken(Exception):
     """The Trakt account already belongs to another website account's profile."""
 
