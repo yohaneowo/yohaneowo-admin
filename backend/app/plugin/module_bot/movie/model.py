@@ -40,6 +40,8 @@ class MovieSubscriberModel(MappedBase):
     # /anime recommend: its own daily picks (test accounts), and whether this season's airing anime
     # are among the picks (the website's account settings switch; on by default).
     anime_pick_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # /anime recommend picks beyond the daily ones: 100 to start, never reset, added by the owner.
+    anime_bonus_picks: Mapped[int] = mapped_column(Integer, default=100)
     anime_airing: Mapped[bool] = mapped_column(Boolean, default=True)
     revision: Mapped[str] = mapped_column(String(36))
     snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -123,6 +125,8 @@ class AnimePickModel(MappedBase):
     # What 看过了 added: a film's play (its history id) or a season's plays (removed by season).
     history_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     history_added: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Taken from the bonus picks (the day's were used up); a refund gives the bonus pick back.
+    uses_bonus: Mapped[bool] = mapped_column(Boolean, default=False)
     acted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # The card the bot showed, with the Trakt target ({type, tmdbId, season, traktId} or null).
     data: Mapped[dict] = mapped_column(JSON)

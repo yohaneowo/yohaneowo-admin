@@ -264,3 +264,22 @@ def test_a_cleared_record_never_removes_the_persons_own_show_rating():
     ):
         assert asyncio.run(ar.sync_show_rating("token", "p", {"type": "show", "traktId": 1420})) == 9
     trakt.assert_not_awaited()
+
+
+def _pick(day, *, bonus=False, rated=False, n=0):
+    return SimpleNamespace(pick_id=f"{day}-{n}", day=day, uses_bonus=bonus, own_rating=rated, action="watched" if rated else None, acted_at=None, shown_at=n)
+
+
+def test_bonus_picks_dont_count_against_the_day():
+    picks = [_pick("d", n=i) for i in range(5)] + [_pick("d", bonus=True, n=9)]
+    assert ar.used_today(picks, "d") == 5
+    # A rated (refunded) day's pick frees one of the day's again.
+    picks[0] = _pick("d", rated=True, n=0)
+    assert ar.used_today(picks, "d") == 4
+
+
+def test_granting_bonus_never_goes_below_zero():
+    row = SimpleNamespace(anime_bonus_picks=100)
+    assert ar.grant_bonus(row, 20) == 120
+    assert ar.grant_bonus(row, -500) == 0
+    assert ar.bonus_of(SimpleNamespace(anime_bonus_picks=None)) == 0

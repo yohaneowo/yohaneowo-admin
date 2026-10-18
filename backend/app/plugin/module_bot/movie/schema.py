@@ -61,6 +61,13 @@ class AnimePickIn(BaseModel):
     skip: str | None = Field(default=None, max_length=36)
 
 
+class AnimeBonusIn(BaseModel):
+    """The owner's /anime-bonus: picks to add (negative takes some back)."""
+
+    model_config = ConfigDict(extra="forbid")
+    amount: int = Field(ge=-10000, le=10000)
+
+
 class AnimeSettingsIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     # Whether /anime recommend picks include this season's airing anime.

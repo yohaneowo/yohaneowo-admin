@@ -16,6 +16,7 @@ from . import bonds as bonds_module
 from .auth import verify_site_token
 from .model import MovieSubscriberModel
 from .schema import (
+    AnimeBonusIn,
     AnimePickIn,
     AnimeSettingsIn,
     BondsIn,
@@ -194,11 +195,20 @@ async def list_anime_picks(discord_id: DiscordId, db: Db):
         data={
             "remainingToday": await anime_recommend.quota_left(db, row),
             "quota": anime_recommend.quota_for(row),
+            "bonus": anime_recommend.bonus_of(row),
             "airing": bool(row.anime_airing),
             "traktConnected": service.tokens_of(row) is not None and not row.trakt_reauth,
             "picks": [anime_recommend.pick_out(p) for p in sorted(recent, key=lambda p: p.shown_at or service.utcnow(), reverse=True)],
         }
     )
+
+
+@MovieInternalRouter.post("/anime-picks/{discord_id}/bonus")
+async def post_anime_bonus(discord_id: DiscordId, data: AnimeBonusIn, db: Db):
+    """/anime-bonus (the bot checks it is the owner asking): add bonus picks to someone."""
+    row = await _bot_profile(db, discord_id, lock=True)
+    bonus = anime_recommend.grant_bonus(row, data.amount)
+    return SuccessResponse(data={"bonus": bonus, "remainingToday": await anime_recommend.quota_left(db, row)})
 
 
 @MovieInternalRouter.get("/anime-picks/{discord_id}/progress")
