@@ -3,19 +3,23 @@ logo and description from Bangumi, and every anime it was the main studio of (An
 Chinese titles and Bangumi / MyAnimeList scores.
 
 The works list is AniList's (Bangumi lists hundreds of entries per studio, many as a mere
-contributor), matched to Bangumi's list of the studio's entries by native title, which also gives
-the Chinese title. A studio known only to Bangumi lists its 动画制作 entries instead. The list is
-cached for CARD_DAYS (PARTIAL_HOURS when Bangumi couldn't be reached).
+contributor). Each work is matched to Bangumi's list of the studio's entries by native title, with
+width, Roman numerals, spaces and punctuation ignored; that gives the Chinese title. A studio known
+only to Bangumi lists its 动画制作 entries instead. The list is cached for CARD_DAYS (PARTIAL_HOURS
+when Bangumi couldn't be reached).
 
-Scores are looked up per entry, which takes far longer than a hover for a big studio: each request
-spends up to SCORE_SECONDS on the missing ones, newest first, and leaves the rest to a background
-task, so the card fills in over a few looks. Bangumi scores are cached per entry for SUBJECT_DAYS
-(shared between studios); MAL scores reuse the anime sync's cache.
+What a big studio still needs is slow: a Bangumi search (by title and year) for the works the list
+didn't match, and a Bangumi and a MyAnimeList score per work. A request spends whatever is left of
+REQUEST_SECONDS on them, newest works first, and leaves the rest to a background task, so the
+card fills in over a few looks; after each sync the favourite studios' cards are warmed the same
+way. Search matches are cached per AniList ID for MATCH_DAYS, Bangumi scores per entry for
+SUBJECT_DAYS (shared between studios); MAL scores reuse the anime sync's cache.
 """
 
 import asyncio
 import re
 import time
+import unicodedata
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -27,14 +31,19 @@ from .sources.base import SourceUnavailable
 from .sync.anime import _mal_scores
 from .sync.common import is_integer, is_number, read_cache, write_cache
 
-# v2: every work (not the 20 most popular), scores kept out of the cached list.
-CARD_NAMESPACE = "studio_card_v2"
+# v3: every work, matched loosely; scores and search matches kept out of the cached list.
+CARD_NAMESPACE = "studio_card_v3"
+MATCH_NAMESPACE = "studio_work_bangumi"
 SUBJECT_NAMESPACE = "bangumi_subject_brief"
 CARD_DAYS = 7
 PARTIAL_HOURS = 6
+MATCH_DAYS = 30
+MISS_DAYS = 7
 SUBJECT_DAYS = 7
-SCORE_SECONDS = 12
-BACKGROUND_SECONDS = 900
+# One request's whole budget; building the list comes out of it first.
+REQUEST_SECONDS = 20
+MIN_TOP_UP_SECONDS = 2
+BACKGROUND_SECONDS = 1200
 MAX_PAGES = 12
 EXCLUDED_FORMATS = {"MUSIC"}
 
@@ -43,7 +52,7 @@ STUDIO_QUERY = """query ($id: Int, $page: Int) { Studio(id: $id) { id name
     pageInfo { hasNextPage }
     nodes { id idMal type format title { romaji english native } startDate { year } } } } }"""
 
-# Background score lookups in flight, by card key, so repeated looks don't stack them up.
+# Background top-ups in flight, by card key, so repeated looks don't stack them up.
 _filling: dict[str, asyncio.Task] = {}
 
 
@@ -52,7 +61,8 @@ def _now() -> str:
 
 
 def _norm(text: str | None) -> str:
-    return re.sub(r"[\s・·.\-]", "", text or "").casefold()
+    """Width, Roman numerals (Ⅳ → IV), case, spaces and punctuation don't count."""
+    return re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", text or "")).casefold()
 
 
 def _fresh(entry: dict | None, *, days: float = 0, hours: float = 0) -> bool:
@@ -118,7 +128,7 @@ async def _build(anilist_id: int | None, bangumi_id: int | None) -> dict | None:
         ]
     if not works and not person:
         return None
-    by_name = {_norm(s.get("name")): s for s in subjects}
+    by_name = {_norm(s.get("name")): s for s in subjects if _norm(s.get("name"))}
     for work in works:
         twin = by_name.get(_norm(work["native"])) if work["bangumiId"] is None else None
         if twin:
@@ -135,6 +145,55 @@ async def _build(anilist_id: int | None, bangumi_id: int | None) -> dict | None:
         "partial": partial,
         "fetchedAt": _now(),
     }
+
+
+def _brief(subject: dict | None) -> dict:
+    rating = (subject or {}).get("rating") or {}
+    date = str((subject or {}).get("date") or "")
+    return {
+        "score": rating.get("score") if is_number(rating.get("score")) and rating.get("score") > 0 else None,
+        "year": int(date[:4]) if date[:4].isdigit() else None,
+        "fetchedAt": _now(),
+    }
+
+
+def _same_title(a: str | None, b: str | None) -> bool:
+    x, y = _norm(a), _norm(b)
+    return bool(x and y) and (x == y or (min(len(x), len(y)) >= 3 and (x in y or y in x)))
+
+
+async def _search_matches(works: list[dict], deadline: float) -> tuple[dict[int, dict], bool]:
+    """{AniList ID: {bangumiId, nameCn}} for works the studio's Bangumi list didn't match, found by
+    a Bangumi search on the native title within a year of the AniList start. Also caches the found
+    entry's score (search results carry it)."""
+    wanted = [w for w in works if not w["bangumiId"] and w["anilistId"] and w["native"] and w["year"]]
+    keys = [str(w["anilistId"]) for w in wanted]
+    cached = await read_cache(MATCH_NAMESPACE, keys)
+    fresh: dict[str, dict] = {}
+    briefs: dict[str, dict] = {}
+    left = False
+    for work in wanted:
+        key = str(work["anilistId"])
+        entry = cached.get(key)
+        if _fresh(entry, days=MATCH_DAYS if (entry or {}).get("bangumiId") else MISS_DAYS):
+            continue
+        if time.monotonic() > deadline:
+            left = True
+            break
+        year = work["year"]
+        try:
+            async with async_db_session() as db, db.begin():
+                found = await bangumi.search(db, work["native"], f"{year - 1}-01-01", f"{year + 1}-12-31")
+        except SourceUnavailable as error:
+            logger.warning(f"[studio-card] Bangumi search skipped: {error}")
+            break
+        hit = next((s for s in found if is_integer(s.get("id")) and _same_title(s.get("name"), work["native"])), None)
+        fresh[key] = {"bangumiId": hit["id"] if hit else None, "nameCn": (hit or {}).get("name_cn") or None, "fetchedAt": _now()}
+        if hit:
+            briefs[str(hit["id"])] = _brief(hit)
+    await write_cache(MATCH_NAMESPACE, fresh)
+    await write_cache(SUBJECT_NAMESPACE, briefs)
+    return {int(k): v for k, v in {**cached, **fresh}.items()}, left
 
 
 async def _subject_briefs(ids: list[int], deadline: float) -> tuple[dict[int, dict], bool]:
@@ -155,13 +214,7 @@ async def _subject_briefs(ids: list[int], deadline: float) -> tuple[dict[int, di
         except SourceUnavailable as error:
             logger.warning(f"[studio-card] Bangumi scores skipped: {error}")
             break
-        rating = (subject or {}).get("rating") or {}
-        date = str((subject or {}).get("date") or "")
-        fresh[key] = {
-            "score": rating.get("score") if is_number(rating.get("score")) and rating.get("score") > 0 else None,
-            "year": int(date[:4]) if date[:4].isdigit() else None,
-            "fetchedAt": _now(),
-        }
+        fresh[key] = _brief(subject)
         # Saved as it goes, so a long background run isn't lost halfway.
         if len(fresh) >= 20:
             await write_cache(SUBJECT_NAMESPACE, fresh)
@@ -171,13 +224,26 @@ async def _subject_briefs(ids: list[int], deadline: float) -> tuple[dict[int, di
     return {int(k): v for k, v in {**cached, **fresh}.items()}, left
 
 
-async def _scores(works: list[dict], seconds: float) -> tuple[dict[int, dict], dict[str, dict], bool]:
+def _apply_matches(works: list[dict], matches: dict[int, dict]) -> list[dict]:
+    out = []
+    for work in works:
+        match = matches.get(work["anilistId"]) if work["anilistId"] else None
+        if not work["bangumiId"] and match and match.get("bangumiId"):
+            work = {**work, "bangumiId": match["bangumiId"], "title": match.get("nameCn") or work["title"]}
+        out.append(work)
+    return out
+
+
+async def _top_up(works: list[dict], seconds: float) -> tuple[list[dict], dict[int, dict], dict[str, dict], bool]:
+    """(works with search matches applied, Bangumi briefs, MAL scores, whether anything is left)."""
     deadline = time.monotonic() + seconds
-    (briefs, bangumi_left), (mal, mal_left) = await asyncio.gather(
-        _subject_briefs([w["bangumiId"] for w in works if w["bangumiId"]], deadline),
-        _mal_scores([w["malId"] for w in works if w["malId"]], deadline),
-    )
-    return briefs, mal, bangumi_left or mal_left
+    # MAL needs no matching, so it runs alongside the Bangumi search and scores.
+    mal_task = asyncio.create_task(_mal_scores([w["malId"] for w in works if w["malId"]], deadline))
+    matches, match_left = await _search_matches(works, deadline)
+    works = _apply_matches(works, matches)
+    briefs, bangumi_left = await _subject_briefs([w["bangumiId"] for w in works if w["bangumiId"]], deadline)
+    mal, mal_left = await mal_task
+    return works, briefs, mal, match_left or bangumi_left or mal_left
 
 
 def _fill_later(key: str, works: list[dict]) -> None:
@@ -187,9 +253,9 @@ def _fill_later(key: str, works: list[dict]) -> None:
 
     async def fill() -> None:
         try:
-            await _scores(works, BACKGROUND_SECONDS)
+            await _top_up(works, BACKGROUND_SECONDS)
         except Exception as error:  # noqa: BLE001 - a background top-up must never surface
-            logger.warning(f"[studio-card] background scores stopped: {error}")
+            logger.warning(f"[studio-card] background top-up stopped: {error}")
 
     _filling[key] = asyncio.create_task(fill())
 
@@ -197,6 +263,7 @@ def _fill_later(key: str, works: list[dict]) -> None:
 async def lookup(anilist_id: int | None, bangumi_id: int | None, lang: str = "zh") -> dict | None:
     """{name, logo, description, works: [{anilistId, bangumiId, title, year, bangumiScore, malScore}],
     scoresPending} in Chinese or (lang "en") English; None when neither source knows the studio."""
+    started = time.monotonic()
     key = f"{anilist_id or 0}:{bangumi_id or 0}"
     card: dict[str, Any] | None = (await read_cache(CARD_NAMESPACE, [key])).get(key)
     if not (_fresh(card, hours=PARTIAL_HOURS) if (card or {}).get("partial") else _fresh(card, days=CARD_DAYS)):
@@ -207,7 +274,8 @@ async def lookup(anilist_id: int | None, bangumi_id: int | None, lang: str = "zh
     if not card:
         return None
     works = sorted(card.get("works") or [], key=lambda w: -(w.get("year") or 0))
-    briefs, mal, pending = await _scores(works, SCORE_SECONDS)
+    budget = max(MIN_TOP_UP_SECONDS, REQUEST_SECONDS - (time.monotonic() - started))
+    works, briefs, mal, pending = await _top_up(works, budget)
     if pending:
         _fill_later(key, works)
     english = lang == "en"
@@ -232,3 +300,25 @@ async def lookup(anilist_id: int | None, bangumi_id: int | None, lang: str = "zh
         "works": out,
         "scoresPending": pending,
     }
+
+
+async def warm(studios: list[tuple[int | None, int | None]]) -> None:
+    """After a sync: build the favourite studios' cards and start their top-ups, so a hover finds
+    them ready. Failures only log; the card is built on demand anyway."""
+    for anilist_id, bangumi_id in studios:
+        try:
+            await lookup(anilist_id, bangumi_id)
+        except Exception as error:  # noqa: BLE001
+            logger.warning(f"[studio-card] warm-up of {anilist_id}:{bangumi_id} skipped: {error}")
+
+
+_warming: set[asyncio.Task] = set()
+
+
+def warm_later(studios: list[tuple[int | None, int | None]]) -> None:
+    """Fire-and-forget warm(); the sync doesn't wait for it."""
+    if not studios:
+        return
+    task = asyncio.create_task(warm(studios))
+    _warming.add(task)
+    task.add_done_callback(_warming.discard)

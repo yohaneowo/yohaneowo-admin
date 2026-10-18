@@ -32,7 +32,7 @@ def _node(anilist_id, native, year, mal_id=None, fmt="TV", english=None):
     return {"id": anilist_id, "idMal": mal_id, "type": "ANIME", "format": fmt, "title": {"native": native, "romaji": native, "english": english}, "startDate": {"year": year}}
 
 
-def _run(anilist_data=None, person=None, subjects=(), subject=None, mal=None, bangumi_down=False, cache=None):
+def _run(anilist_data=None, person=None, subjects=(), subject=None, mal=None, bangumi_down=False, cache=None, search=None):
     store = dict(cache or {})
 
     async def read_cache(namespace, keys):
@@ -47,6 +47,7 @@ def _run(anilist_data=None, person=None, subjects=(), subject=None, mal=None, ba
         "person": down if bangumi_down else AsyncMock(return_value=person),
         "subjects": down if bangumi_down else AsyncMock(return_value=list(subjects)),
         "subject": down if bangumi_down else AsyncMock(side_effect=lambda db, sid: (subject or {}).get(sid)),
+        "search": down if bangumi_down else AsyncMock(side_effect=lambda db, keyword, low, high: (search or {}).get(keyword, [])),
         "mal": AsyncMock(return_value=(mal or {}, False)),
     }
     with (
@@ -57,6 +58,7 @@ def _run(anilist_data=None, person=None, subjects=(), subject=None, mal=None, ba
         patch.object(studios.bangumi, "person", calls["person"]),
         patch.object(studios.bangumi, "person_subjects", calls["subjects"]),
         patch.object(studios.bangumi, "subject", calls["subject"]),
+        patch.object(studios.bangumi, "search", calls["search"]),
         patch.object(studios, "_mal_scores", calls["mal"]),
     ):
         zh = asyncio.run(studios.lookup(11, 603, "zh"))
@@ -109,7 +111,7 @@ def test_bangumi_only_studio_lists_its_animation_entries():
 def test_bangumi_down_still_shows_anilist_works_and_retries_sooner():
     zh, _, _, store = _run(anilist_data=_anilist(_node(1, "DEATH NOTE", 2006, mal_id=1535)), bangumi_down=True, mal={"1535": {"score": 8.62}})
     assert [(w["title"], w["malScore"], w["bangumiScore"]) for w in zh["works"]] == [("DEATH NOTE", 8.62, None)]
-    assert store[("studio_card_v2", "11:603")]["partial"] is True
+    assert store[("studio_card_v3", "11:603")]["partial"] is True
 
 
 def test_unknown_studio_is_none():
@@ -135,7 +137,8 @@ def test_every_page_of_works_is_listed():
 def test_scores_left_over_continue_in_the_background():
     scheduled = []
     with (
-        patch.object(studios, "SCORE_SECONDS", -1),
+        patch.object(studios, "REQUEST_SECONDS", -1),
+        patch.object(studios, "MIN_TOP_UP_SECONDS", -1),
         patch.object(studios, "_fill_later", lambda key, works: scheduled.append((key, len(works)))),
     ):
         zh, _, _, _ = _run(
@@ -149,3 +152,27 @@ def test_scores_left_over_continue_in_the_background():
     assert zh["scoresPending"] is True
     assert zh["works"][0]["title"] == "死亡笔记" and zh["works"][0]["bangumiScore"] is None
     assert scheduled and scheduled[0] == ("11:603", 1)
+
+
+def test_titles_match_despite_width_numerals_and_punctuation():
+    assert studios._norm("チ。-地球の運動について-") == studios._norm("チ。 ―地球の運動について―")
+    assert studios._norm("オーバーロードⅣ") == studios._norm("オーバーロードIV")
+    assert studios._same_title("ダイヤのA[エース]", "ダイヤのA") is True
+    assert studios._same_title("A", "AB") is False
+
+
+def test_unmatched_works_are_searched_by_title_and_year():
+    zh, _, calls, store = _run(
+        anilist_data=_anilist(_node(1, "ワンパンマン OVA", 2015, mal_id=30276)),
+        person={"name": "MADHOUSE"},
+        # The studio's own list doesn't have it under that title.
+        subjects=[],
+        search={"ワンパンマン OVA": [{"id": 77, "name": "ワンパンマン OVA", "name_cn": "一拳超人 OVA", "rating": {"score": 7.4}, "date": "2015-12-01"}]},
+        mal={"30276": {"score": 7.8}},
+    )
+    work = zh["works"][0]
+    assert (work["title"], work["bangumiId"], work["bangumiScore"], work["malScore"]) == ("一拳超人 OVA", 77, 7.4, 7.8)
+    # The search ran once: the match and the score are cached (the English look reused them).
+    assert calls["search"].await_count == 1
+    assert calls["search"].await_args.args[2:] == ("2014-01-01", "2016-12-31")
+    assert store[("studio_work_bangumi", "1")]["bangumiId"] == 77

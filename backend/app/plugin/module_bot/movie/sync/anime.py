@@ -499,4 +499,8 @@ async def enrich_anime(section: dict | None, budget_seconds: float = BUDGET_SECO
     staff = _favourites(section["items"], section.get("mean"))
     await attach_photos(staff, deadline + 60)
     section["people"] = [p for p in section["people"] if p["role"] in ("creator", "cast")] + staff
+    # The favourite studios' cards get built in the background, so a hover on the site finds them ready.
+    from .. import studios  # noqa: PLC0415 - studios imports this module
+
+    studios.warm_later([(p["id"] if p["id"] > 0 else None, p.get("bangumiId")) for p in staff if p["role"] == "studio"])
     return pending
