@@ -339,21 +339,44 @@ async def person_lookup(
     return SuccessResponse(data=card)
 
 
-@MovieWebsiteRouter.get("/studios/lookup")
-async def studio_lookup(
-    anilistId: Annotated[int | None, Query(ge=1)] = None,
-    bangumiId: Annotated[int | None, Query(ge=1)] = None,
+StudioAnilistId = Annotated[int | None, Query(ge=1)]
+StudioBangumiId = Annotated[int | None, Query(ge=1)]
+
+
+def _studio_ids(anilist_id: int | None, bangumi_id: int | None) -> None:
+    if anilist_id is None and bangumi_id is None:
+        raise HTTPException(422, "需要 anilistId 或 bangumiId")
+
+
+@MovieWebsiteRouter.get("/studios/info")
+async def studio_info(
+    anilistId: StudioAnilistId = None,
+    bangumiId: StudioBangumiId = None,
     lang: Annotated[Literal["zh", "en"], Query()] = "zh",
 ):
-    """The studio card (动画制作): logo, description and best-known works with scores."""
-    if anilistId is None and bangumiId is None:
-        raise HTTPException(422, "需要 anilistId 或 bangumiId")
+    """The studio card's head (动画制作): name, logo and description."""
+    _studio_ids(anilistId, bangumiId)
     try:
-        card = await studios.lookup(anilistId, bangumiId, lang)
+        card = await studios.info(anilistId, bangumiId, lang)
     except SourceUnavailable as error:
         raise HTTPException(503, str(error)) from error
     if card is None:
         raise HTTPException(404, "找不到这家公司")
+    return SuccessResponse(data=card)
+
+
+@MovieWebsiteRouter.get("/studios/works")
+async def studio_works(
+    anilistId: StudioAnilistId = None,
+    bangumiId: StudioBangumiId = None,
+    lang: Annotated[Literal["zh", "en"], Query()] = "zh",
+):
+    """The studio card's works as known right now; the site polls while `building` or
+    `scoresPending` is set (the rest is fetched in the background)."""
+    _studio_ids(anilistId, bangumiId)
+    card = await studios.works(anilistId, bangumiId, lang)
+    if card is None:
+        raise HTTPException(404, "找不到这家公司的作品")
     return SuccessResponse(data=card)
 
 
