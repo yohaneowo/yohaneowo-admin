@@ -11,11 +11,28 @@ from app.core.base_schema import AuthSchema
 from app.core.dependencies import AuthPermission, db_getter
 
 from ..internal_auth import verify_bot_token
+from . import anime_recommend, credits, people, recommend, service
 from . import bonds as bonds_module
-from . import credits, people, recommend, service
 from .auth import verify_site_token
 from .model import MovieSubscriberModel
-from .schema import BondsIn, CacheBatch, CacheKeys, DiscordId, PickIn, RatingsIn, RecordPatch, RegionIn, SiteUserId, SourceRequest, SubscriptionIn, TraktConnectIn, WatchedIn, WikimediaRequest
+from .schema import (
+    AnimePickIn,
+    AnimeSettingsIn,
+    BondsIn,
+    CacheBatch,
+    CacheKeys,
+    DiscordId,
+    PickIn,
+    RatingsIn,
+    RecordPatch,
+    RegionIn,
+    SiteUserId,
+    SourceRequest,
+    SubscriptionIn,
+    TraktConnectIn,
+    WatchedIn,
+    WikimediaRequest,
+)
 from .sources import omdb, tmdb, trakt, wikipedia
 from .sources.base import SourceUnavailable
 from .sync import job
@@ -151,6 +168,68 @@ async def post_pick_unrate(discord_id: DiscordId, pick_id: Annotated[str, Field(
     row = await _bot_profile(db, discord_id)
     try:
         return SuccessResponse(data=await recommend.unrate(db, row, pick_id))
+    except (recommend.TraktRequired, LookupError, SourceUnavailable, TraktTokenError) as error:
+        raise _pick_errors(error) from error
+
+
+# /anime recommend: the same contract as /movie recommend (403 traktRequired, 429 dailyLimit,
+# 404 nothingToPick / pickNotFound), its own quota.
+@MovieInternalRouter.post("/anime-picks/{discord_id}")
+async def post_anime_pick(discord_id: DiscordId, data: AnimePickIn, db: Db):
+    row = await _bot_profile(db, discord_id)
+    filters = {"genre": data.genre, "decade": data.decade, "format": data.format, "length": data.length, "airing": data.airing}
+    try:
+        card = await anime_recommend.pick(db, row, filters, data.skip)
+    except (recommend.TraktRequired, recommend.DailyLimit, recommend.NothingToPick, SourceUnavailable, TraktTokenError) as error:
+        raise _pick_errors(error) from error
+    return SuccessResponse(data=card)
+
+
+@MovieInternalRouter.get("/anime-picks/{discord_id}")
+async def list_anime_picks(discord_id: DiscordId, db: Db):
+    """Today's anime quota and the recent anime picks, newest first."""
+    row = await _bot_profile(db, discord_id)
+    recent = await anime_recommend._recent_picks(db, row.profile_id)  # noqa: SLF001
+    return SuccessResponse(
+        data={
+            "remainingToday": await anime_recommend.quota_left(db, row),
+            "quota": anime_recommend.quota_for(row),
+            "airing": bool(row.anime_airing),
+            "traktConnected": service.tokens_of(row) is not None and not row.trakt_reauth,
+            "picks": [anime_recommend.pick_out(p) for p in sorted(recent, key=lambda p: p.shown_at or service.utcnow(), reverse=True)],
+        }
+    )
+
+
+@MovieInternalRouter.get("/anime-picks/{discord_id}/progress")
+async def get_anime_pick_progress(discord_id: DiscordId, db: Db):
+    row = await _bot_profile(db, discord_id)
+    return SuccessResponse(data=await anime_recommend.progress_of(row.profile_id))
+
+
+@MovieInternalRouter.post("/anime-picks/{discord_id}/{pick_id}/watchlist")
+async def post_anime_pick_watchlist(discord_id: DiscordId, pick_id: Annotated[str, Field(max_length=36)], db: Db):
+    row = await _bot_profile(db, discord_id)
+    try:
+        return SuccessResponse(data=await anime_recommend.want(db, row, pick_id))
+    except (recommend.TraktRequired, LookupError, SourceUnavailable, TraktTokenError) as error:
+        raise _pick_errors(error) from error
+
+
+@MovieInternalRouter.post("/anime-picks/{discord_id}/{pick_id}/watched")
+async def post_anime_pick_watched(discord_id: DiscordId, pick_id: Annotated[str, Field(max_length=36)], data: WatchedIn, db: Db):
+    row = await _bot_profile(db, discord_id)
+    try:
+        return SuccessResponse(data=await anime_recommend.watched(db, row, pick_id, data.rating))
+    except (recommend.TraktRequired, LookupError, SourceUnavailable, TraktTokenError) as error:
+        raise _pick_errors(error) from error
+
+
+@MovieInternalRouter.post("/anime-picks/{discord_id}/{pick_id}/unrate")
+async def post_anime_pick_unrate(discord_id: DiscordId, pick_id: Annotated[str, Field(max_length=36)], db: Db):
+    row = await _bot_profile(db, discord_id)
+    try:
+        return SuccessResponse(data=await anime_recommend.unrate(db, row, pick_id))
     except (recommend.TraktRequired, LookupError, SourceUnavailable, TraktTokenError) as error:
         raise _pick_errors(error) from error
 
@@ -306,6 +385,24 @@ async def website_bonds(site_user_id: SiteUserId, data: BondsIn, db: Db):
         if other is not None and other.active:
             others.append(other)
     return SuccessResponse(data={"bonds": bonds_module.bonds(me, others)})
+
+
+@MovieWebsiteRouter.get("/users/{site_user_id}/anime-settings")
+async def website_anime_settings(site_user_id: SiteUserId, db: Db):
+    """The account settings page: whether /anime recommend includes airing anime."""
+    row = await service.by_site_user(db, site_user_id)
+    if row is None or not row.active:
+        raise HTTPException(404, "noProfile")
+    return SuccessResponse(data={"airing": bool(row.anime_airing)})
+
+
+@MovieWebsiteRouter.put("/users/{site_user_id}/anime-settings")
+async def website_set_anime_settings(site_user_id: SiteUserId, data: AnimeSettingsIn, db: Db):
+    row = await service.by_site_user(db, site_user_id, lock=True)
+    if row is None or not row.active:
+        raise HTTPException(404, "noProfile")
+    row.anime_airing = data.airing
+    return SuccessResponse(data={"airing": bool(row.anime_airing)})
 
 
 @MovieWebsiteRouter.put("/users/{site_user_id}/region")

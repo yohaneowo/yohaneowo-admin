@@ -46,6 +46,27 @@ class PickIn(BaseModel):
     skip: str | None = Field(default=None, max_length=36)
 
 
+class AnimePickIn(BaseModel):
+    """What `/anime recommend` asked for."""
+
+    model_config = ConfigDict(extra="forbid")
+    # One of AniList's 18 genres (English names).
+    genre: str | None = Field(default=None, max_length=32)
+    decade: int | None = Field(default=None, ge=1960, le=2100, multiple_of=10)
+    format: Literal["TV", "MOVIE", "ONA"] | None = None
+    # short ≤ 13 episodes, cour2 14-26, long > 26.
+    length: Literal["short", "cour2", "long"] | None = None
+    # Only this season's airing anime (whatever the website switch says).
+    airing: bool = False
+    skip: str | None = Field(default=None, max_length=36)
+
+
+class AnimeSettingsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # Whether /anime recommend picks include this season's airing anime.
+    airing: bool
+
+
 class WatchedIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rating: int | None = Field(default=None, ge=1, le=10)

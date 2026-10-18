@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Index, Integer, String, Text
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Index, Integer, String, Text, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base_model import MappedBase
@@ -37,6 +37,10 @@ class MovieSubscriberModel(MappedBase):
     recommendations: Mapped[bool] = mapped_column(Boolean, default=False)
     # /movie recommend picks a day for this profile instead of the default (test accounts).
     pick_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # /anime recommend: its own daily picks (test accounts), and whether this season's airing anime
+    # are among the picks (the website's account settings switch; on by default).
+    anime_pick_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    anime_airing: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     revision: Mapped[str] = mapped_column(String(36))
     snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Copied from the snapshot so the platform-wide rank is one indexed count, not a JSON scan.
@@ -92,6 +96,35 @@ class MoviePickModel(MappedBase):
     history_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     acted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # The card the bot showed (title, overview, poster…), so /movie status can list it.
+    data: Mapped[dict] = mapped_column(JSON)
+
+
+class AnimePickModel(MappedBase):
+    """One `/anime recommend` pick (an AniList entry: a season, a film or an ONA), like
+    MoviePickModel: the day's quota, the 30-day no-repeat rule, the pool weights and what was
+    written to Trakt (想看 → watchlist, 看过了 → the season's plays + rating) so it can be undone."""
+
+    __tablename__ = "bot_anime_pick"
+    __table_args__ = (Index("ix_bot_anime_pick_profile_day", "profile_id", "day"), Index("ix_bot_anime_pick_profile_shown", "profile_id", "shown_at"))
+
+    pick_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    profile_id: Mapped[str] = mapped_column(String(36))
+    anilist_id: Mapped[int] = mapped_column(Integer)
+    # sequel / comfort / bridge / explore / airing
+    mode: Mapped[str] = mapped_column(String(16))
+    day: Mapped[str] = mapped_column(String(10))
+    shown_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+    title: Mapped[str] = mapped_column(String(500))
+    reason: Mapped[str] = mapped_column(String(500))
+    # watchlist / watched / watched_existing / skip, None while unanswered (or a rating taken back).
+    action: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    own_rating: Mapped[bool] = mapped_column(Boolean, default=False)
+    # What 看过了 added: a film's play (its history id) or a season's plays (removed by season).
+    history_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    history_added: Mapped[bool] = mapped_column(Boolean, default=False)
+    acted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # The card the bot showed, with the Trakt target ({type, tmdbId, season, traktId} or null).
     data: Mapped[dict] = mapped_column(JSON)
 
 
