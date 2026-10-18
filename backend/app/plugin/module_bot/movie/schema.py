@@ -61,10 +61,11 @@ class AnimePickIn(BaseModel):
     skip: str | None = Field(default=None, max_length=36)
 
 
-class AnimeBonusIn(BaseModel):
-    """The owner's /anime-bonus: picks to add (negative takes some back)."""
+class BonusIn(BaseModel):
+    """The owner's /owner bonus: bonus picks to add to a feature (negative takes some back)."""
 
     model_config = ConfigDict(extra="forbid")
+    feature: Literal["anime"]
     amount: int = Field(ge=-10000, le=10000)
 
 

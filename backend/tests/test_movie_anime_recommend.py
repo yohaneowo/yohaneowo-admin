@@ -278,11 +278,28 @@ def test_bonus_picks_dont_count_against_the_day():
     assert ar.used_today(picks, "d") == 4
 
 
-def test_granting_bonus_never_goes_below_zero():
-    row = SimpleNamespace(anime_bonus_picks=100)
-    assert ar.grant_bonus(row, 20) == 120
-    assert ar.grant_bonus(row, -500) == 0
-    assert ar.bonus_of(SimpleNamespace(anime_bonus_picks=None)) == 0
+def test_bonus_starts_at_the_features_amount_and_never_goes_below_zero():
+    from app.plugin.module_bot.movie import bonus
+
+    class Db:
+        def __init__(self):
+            self.rows = {}
+
+        async def get(self, model, key, with_for_update=False):
+            return self.rows.get(key)
+
+        def add(self, row):
+            self.rows[(row.profile_id, row.feature)] = row
+
+        async def flush(self):
+            pass
+
+    db = Db()
+    assert asyncio.run(bonus.left(db, "p", "anime")) == 100
+    assert asyncio.run(bonus.add(db, "p", "anime", 20)) == 120
+    assert asyncio.run(bonus.left(db, "p", "anime")) == 120
+    assert asyncio.run(bonus.add(db, "p", "anime", -500)) == 0
+    assert asyncio.run(bonus.left(db, "q", "anime")) == 100
 
 
 def test_a_second_cour_inside_a_watched_tmdb_season_counts_as_seen():

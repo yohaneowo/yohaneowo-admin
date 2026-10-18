@@ -13,13 +13,14 @@ from app.core.dependencies import AuthPermission, db_getter
 from ..internal_auth import verify_bot_token
 from . import anime_recommend, credits, people, recommend, service
 from . import bonds as bonds_module
+from . import bonus as bonus_picks
 from .auth import verify_site_token
 from .model import MovieSubscriberModel
 from .schema import (
-    AnimeBonusIn,
     AnimePickIn,
     AnimeSettingsIn,
     BondsIn,
+    BonusIn,
     CacheBatch,
     CacheKeys,
     DiscordId,
@@ -195,7 +196,7 @@ async def list_anime_picks(discord_id: DiscordId, db: Db):
         data={
             "remainingToday": await anime_recommend.quota_left(db, row),
             "quota": anime_recommend.quota_for(row),
-            "bonus": anime_recommend.bonus_of(row),
+            "bonus": await bonus_picks.left(db, row.profile_id, "anime"),
             "airing": bool(row.anime_airing),
             "traktConnected": service.tokens_of(row) is not None and not row.trakt_reauth,
             "picks": [anime_recommend.pick_out(p) for p in sorted(recent, key=lambda p: p.shown_at or service.utcnow(), reverse=True)],
@@ -203,12 +204,33 @@ async def list_anime_picks(discord_id: DiscordId, db: Db):
     )
 
 
-@MovieInternalRouter.post("/anime-picks/{discord_id}/bonus")
-async def post_anime_bonus(discord_id: DiscordId, data: AnimeBonusIn, db: Db):
-    """/anime-bonus (the bot checks it is the owner asking): add bonus picks to someone."""
-    row = await _bot_profile(db, discord_id, lock=True)
-    bonus = anime_recommend.grant_bonus(row, data.amount)
-    return SuccessResponse(data={"bonus": bonus, "remainingToday": await anime_recommend.quota_left(db, row)})
+async def _owner_features(db: AsyncSession, row: MovieSubscriberModel) -> list[dict]:
+    """Per feature with a bonus: the day's picks left, the daily quota and the bonus left."""
+    daily = {"anime": (anime_recommend.quota_left, anime_recommend.quota_for)}
+    return [
+        {
+            "feature": feature,
+            "remainingToday": await daily[feature][0](db, row),
+            "quota": daily[feature][1](row),
+            "bonus": await bonus_picks.left(db, row.profile_id, feature),
+        }
+        for feature in bonus_picks.FEATURES
+    ]
+
+
+@MovieInternalRouter.get("/owner/{discord_id}")
+async def get_owner_view(discord_id: DiscordId, db: Db):
+    """/owner check (the bot checks it is the owner asking): someone's quotas and bonus picks."""
+    row = await _bot_profile(db, discord_id)
+    return SuccessResponse(data={"traktName": row.trakt_name, "traktUser": row.trakt_user, "features": await _owner_features(db, row)})
+
+
+@MovieInternalRouter.post("/owner/{discord_id}/bonus")
+async def post_owner_bonus(discord_id: DiscordId, data: BonusIn, db: Db):
+    """/owner bonus (the bot checks it is the owner asking): add bonus picks to someone's feature."""
+    row = await _bot_profile(db, discord_id)
+    bonus = await bonus_picks.add(db, row.profile_id, data.feature, data.amount)
+    return SuccessResponse(data={"feature": data.feature, "bonus": bonus, "features": await _owner_features(db, row)})
 
 
 @MovieInternalRouter.get("/anime-picks/{discord_id}/progress")

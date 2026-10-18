@@ -40,8 +40,6 @@ class MovieSubscriberModel(MappedBase):
     # /anime recommend: its own daily picks (test accounts), and whether this season's airing anime
     # are among the picks (the website's account settings switch; on by default).
     anime_pick_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # /anime recommend picks beyond the daily ones: 100 to start, never reset, added by the owner.
-    anime_bonus_picks: Mapped[int] = mapped_column(Integer, default=100)
     anime_airing: Mapped[bool] = mapped_column(Boolean, default=True)
     revision: Mapped[str] = mapped_column(String(36))
     snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -99,6 +97,17 @@ class MoviePickModel(MappedBase):
     acted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # The card the bot showed (title, overview, poster…), so /movie status can list it.
     data: Mapped[dict] = mapped_column(JSON)
+
+
+class PickBonusModel(MappedBase):
+    """Bonus uses of a feature beyond its daily quota (bonus.py): one row per profile and feature,
+    made the first time the amount changes (until then the feature's starting amount applies)."""
+
+    __tablename__ = "bot_pick_bonus"
+
+    profile_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    feature: Mapped[str] = mapped_column(String(32), primary_key=True)
+    amount: Mapped[int] = mapped_column(Integer)
 
 
 class AnimePickModel(MappedBase):
