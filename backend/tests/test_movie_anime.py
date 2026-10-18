@@ -287,3 +287,11 @@ def test_unexpected_photo_urls_count_as_none():
     assert anime._usable_photo("https://lain.bgm.tv/pic/crt/l/ab/cd/1_prsn_x.jpg?r=1")
     assert anime._usable_photo("http://lain.bgm.tv/pic/crt/l/ab/cd/1_prsn_x.jpg") is None
     assert anime._usable_photo("https://example.com/a.jpg") is None
+
+
+def test_snapshot_keeps_the_staff_bangumi_id():
+    # The studio card needs it; the snapshot is re-dumped through the schema, which drops unknown keys.
+    from app.plugin.module_bot.movie.schema import ShowPerson
+
+    person = {"id": 11, "name": "MADHOUSE", "role": "studio", "bangumiId": 603, "average": 8.5, "count": 2, "films": []}
+    assert ShowPerson.model_validate(person).model_dump()["bangumiId"] == 603

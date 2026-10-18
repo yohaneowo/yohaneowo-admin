@@ -201,6 +201,8 @@ class ShowItem(ProfileFilm):
 
 class ShowPerson(Person):
     role: Literal["creator", "cast", "director", "original", "studio", "music", "chiefAnimationDirector"]
+    # Anime staff: the Bangumi person (a studio's company entry), for the website's studio card.
+    bangumiId: int | None = None
 
 
 class ShowSection(BaseModel):

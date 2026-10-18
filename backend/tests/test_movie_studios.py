@@ -73,8 +73,9 @@ def test_works_from_anilist_with_bangumi_titles_and_scores():
             {**_node(3, "Music Video", 2020), "format": "MUSIC"},
         ),
         person={"name": "MADHOUSE", "summary": " 日本的动画制作公司。 ", "images": {"large": "https://lain.bgm.tv/pic/crt/l/f3/80/603.jpg"}},
+        # The Chinese title comes from this list; the Bangumi score from each entry.
         subjects=[{"id": 1, "type": 2, "name": "DEATH NOTE", "name_cn": "死亡笔记", "staff": "动画制作"}, {"id": 9, "type": 1, "name": "ワンパンマン", "staff": "原作"}],
-        subject={1: {"name_cn": "死亡笔记", "date": "2006-10-03", "rating": {"score": 8.1}}},
+        subject={1: {"date": "2006-10-03", "rating": {"score": 8.1}}},
         mal={"1535": {"score": 8.62}},
     )
     assert zh["name"] == "MADHOUSE"
@@ -96,10 +97,10 @@ def test_bangumi_only_studio_lists_its_animation_entries():
         anilist_data=None,
         person={"name": "ゼロジー", "summary": "", "images": {"large": ""}},
         subjects=[
-            {"id": 5, "type": 2, "name": "作品A", "staff": "动画制作"},
+            {"id": 5, "type": 2, "name": "作品A", "name_cn": "作品甲", "staff": "动画制作"},
             {"id": 6, "type": 2, "name": "作品B", "staff": "制作协力"},
         ],
-        subject={5: {"name_cn": "作品甲", "date": "2019-01-01", "rating": {"score": 7.2}}},
+        subject={5: {"date": "2019-01-01", "rating": {"score": 7.2}}},
     )
     assert [(w["title"], w["year"], w["bangumiScore"]) for w in zh["works"]] == [("作品甲", 2019, 7.2)]
     assert zh["logo"] is None and zh["description"] is None
@@ -108,9 +109,43 @@ def test_bangumi_only_studio_lists_its_animation_entries():
 def test_bangumi_down_still_shows_anilist_works_and_retries_sooner():
     zh, _, _, store = _run(anilist_data=_anilist(_node(1, "DEATH NOTE", 2006, mal_id=1535)), bangumi_down=True, mal={"1535": {"score": 8.62}})
     assert [(w["title"], w["malScore"], w["bangumiScore"]) for w in zh["works"]] == [("DEATH NOTE", 8.62, None)]
-    assert store[("studio_card", "11:603")]["partial"] is True
+    assert store[("studio_card_v2", "11:603")]["partial"] is True
 
 
 def test_unknown_studio_is_none():
     zh, _, _, _ = _run(anilist_data={"Studio": None}, person=None, subjects=[])
     assert zh is None
+
+
+def test_every_page_of_works_is_listed():
+    pages = [
+        {"Studio": {"id": 11, "name": "MADHOUSE", "media": {"pageInfo": {"hasNextPage": True}, "nodes": [_node(1, "A", 2020)]}}},
+        {"Studio": {"id": 11, "name": "MADHOUSE", "media": {"pageInfo": {"hasNextPage": False}, "nodes": [_node(2, "B", 2010), _node(3, "C", 2015)]}}},
+    ]
+    zh, _, calls, _ = _run(anilist_data=None, person={"name": "MADHOUSE"}, subjects=[])
+    with (
+        patch.object(studios.anilist, "query", AsyncMock(side_effect=pages)),
+        patch.object(studios, "async_db_session", _Session),
+    ):
+        name, works = asyncio.run(studios._anilist_works(11))
+    assert name == "MADHOUSE"
+    assert [w["anilistId"] for w in works] == [1, 2, 3]
+
+
+def test_scores_left_over_continue_in_the_background():
+    scheduled = []
+    with (
+        patch.object(studios, "SCORE_SECONDS", -1),
+        patch.object(studios, "_fill_later", lambda key, works: scheduled.append((key, len(works)))),
+    ):
+        zh, _, _, _ = _run(
+            anilist_data=_anilist(_node(1, "DEATH NOTE", 2006, mal_id=1535)),
+            person={"name": "MADHOUSE"},
+            subjects=[{"id": 1, "type": 2, "name": "DEATH NOTE", "name_cn": "死亡笔记", "staff": "动画制作"}],
+            subject={1: {"date": "2006-10-03", "rating": {"score": 8.1}}},
+            mal={},
+        )
+    # Out of time before any Bangumi score: the card says so and a background run takes over.
+    assert zh["scoresPending"] is True
+    assert zh["works"][0]["title"] == "死亡笔记" and zh["works"][0]["bangumiScore"] is None
+    assert scheduled and scheduled[0] == ("11:603", 1)
