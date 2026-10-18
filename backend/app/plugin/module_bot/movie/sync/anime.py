@@ -250,6 +250,11 @@ async def _mal_scores(ids: list[int], deadline: float) -> tuple[dict[str, dict],
             continue
         failures = 0
         fresh[key] = {"score": _score((found or {}).get("score")), "votes": (found or {}).get("votes"), "fetchedAt": _now()}
+        # Saved as it goes: the studio card polls the cache while a long run fills it.
+        if len(fresh) >= 10:
+            await write_cache(MAL_NAMESPACE, fresh)
+            cached.update(fresh)
+            fresh = {}
     await write_cache(MAL_NAMESPACE, fresh)
     return {**cached, **fresh}, left
 
