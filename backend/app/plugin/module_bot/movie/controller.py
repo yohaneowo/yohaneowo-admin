@@ -12,7 +12,7 @@ from app.core.dependencies import AuthPermission, db_getter
 
 from ..internal_auth import verify_bot_token
 from . import bonds as bonds_module
-from . import people, recommend, service, studios
+from . import credits, people, recommend, service
 from .auth import verify_site_token
 from .model import MovieSubscriberModel
 from .schema import BondsIn, CacheBatch, CacheKeys, DiscordId, PickIn, RatingsIn, RecordPatch, RegionIn, SiteUserId, SourceRequest, SubscriptionIn, TraktConnectIn, WatchedIn, WikimediaRequest
@@ -339,44 +339,62 @@ async def person_lookup(
     return SuccessResponse(data=card)
 
 
-StudioAnilistId = Annotated[int | None, Query(ge=1)]
-StudioBangumiId = Annotated[int | None, Query(ge=1)]
+CreditKind = Annotated[Literal["studio", "director", "original", "music", "chiefAnimationDirector", "cast"], Query()]
+PositiveId = Annotated[int | None, Query(ge=1)]
 
 
-def _studio_ids(anilist_id: int | None, bangumi_id: int | None) -> None:
-    if anilist_id is None and bangumi_id is None:
+async def _credit_who(kind: str, anilist_id: int | None, bangumi_id: int | None, tmdb_id: int | None, name: str | None) -> credits.Who:
+    """Whose card: voice actors arrive as TMDB people and are looked up on AniList and Bangumi."""
+    if kind == "cast":
+        if tmdb_id is None:
+            raise HTTPException(422, "声优需要 tmdbId")
+        anilist_id, bangumi_id = await credits.cast_identity(tmdb_id, (name or "").strip() or None)
+        if anilist_id is None and bangumi_id is None:
+            raise HTTPException(404, "找不到这位声优")
+    elif anilist_id is None and bangumi_id is None:
         raise HTTPException(422, "需要 anilistId 或 bangumiId")
+    return credits.Who(kind, anilist_id, bangumi_id)
 
 
-@MovieWebsiteRouter.get("/studios/info")
-async def studio_info(
-    anilistId: StudioAnilistId = None,
-    bangumiId: StudioBangumiId = None,
+@MovieWebsiteRouter.get("/credits/info")
+async def credit_info(
+    kind: CreditKind,
+    anilistId: PositiveId = None,
+    bangumiId: PositiveId = None,
+    tmdbId: PositiveId = None,
+    name: Annotated[str | None, Query(max_length=255)] = None,
     lang: Annotated[Literal["zh", "en"], Query()] = "zh",
 ):
-    """The studio card's head (动画制作): name, logo and description."""
-    _studio_ids(anilistId, bangumiId)
+    """An anime credit card's head (动画制作, 监督, 原作, 音乐, 总作画监督, 声优): name, picture
+    and description."""
     try:
-        card = await studios.info(anilistId, bangumiId, lang)
+        who = await _credit_who(kind, anilistId, bangumiId, tmdbId, name)
+        card = await credits.info(who, lang)
     except SourceUnavailable as error:
         raise HTTPException(503, str(error)) from error
     if card is None:
-        raise HTTPException(404, "找不到这家公司")
+        raise HTTPException(404, "找不到这个人")
     return SuccessResponse(data=card)
 
 
-@MovieWebsiteRouter.get("/studios/works")
-async def studio_works(
-    anilistId: StudioAnilistId = None,
-    bangumiId: StudioBangumiId = None,
+@MovieWebsiteRouter.get("/credits/works")
+async def credit_works(
+    kind: CreditKind,
+    anilistId: PositiveId = None,
+    bangumiId: PositiveId = None,
+    tmdbId: PositiveId = None,
+    name: Annotated[str | None, Query(max_length=255)] = None,
     lang: Annotated[Literal["zh", "en"], Query()] = "zh",
 ):
-    """The studio card's works as known right now; the site polls while `building` or
+    """An anime credit card's works as known right now; the site polls while `building` or
     `scoresPending` is set (the rest is fetched in the background)."""
-    _studio_ids(anilistId, bangumiId)
-    card = await studios.works(anilistId, bangumiId, lang)
+    try:
+        who = await _credit_who(kind, anilistId, bangumiId, tmdbId, name)
+    except SourceUnavailable as error:
+        raise HTTPException(503, str(error)) from error
+    card = await credits.works(who, lang)
     if card is None:
-        raise HTTPException(404, "找不到这家公司的作品")
+        raise HTTPException(404, "找不到作品")
     return SuccessResponse(data=card)
 
 

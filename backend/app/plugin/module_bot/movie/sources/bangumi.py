@@ -60,6 +60,19 @@ async def person_subjects(db: AsyncSession, person_id: int) -> list[dict]:
     return body if isinstance(body, list) else []
 
 
+async def person_characters(db: AsyncSession, person_id: int) -> list[dict]:
+    """A voice actor's roles: [{id, name (the character), staff (主角 / 配角…), subject_id,
+    subject_type, subject_name, subject_name_cn}]."""
+    body = await _request(db, f"/v0/persons/{person_id}/characters")
+    return body if isinstance(body, list) else []
+
+
+async def search_persons(db: AsyncSession, keyword: str) -> list[dict]:
+    """People and companies matching the keyword: [{id, name, …}]."""
+    body = await _request(db, "/v0/search/persons", method="POST", params={"limit": 10}, json={"keyword": keyword})
+    return (body or {}).get("data") or []
+
+
 async def subject(db: AsyncSession, subject_id: int) -> dict | None:
     """One entry: name_cn, date, rating {score, total}…"""
     body = await _request(db, f"/v0/subjects/{subject_id}")
