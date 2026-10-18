@@ -49,7 +49,7 @@ TRAKT_SHOW_NAMESPACE = "anime_trakt_show"
 # The show rating a profile had before the bot first replaced it with its seasons' average, per
 # "profile:show" (restored when every season rating is gone).
 SHOW_RATING_NAMESPACE = "anime_show_rating_origin"
-POOL_VERSION = 1
+POOL_VERSION = 2
 POOL_MAX_AGE = timedelta(hours=24)
 AIRING_MAX_AGE = timedelta(hours=6)
 TRAKT_SHOW_MAX_AGE = timedelta(days=7)
@@ -231,6 +231,10 @@ def build_profile(snapshot: dict | None) -> dict:
     items = section.get("items") or []
     mean = section.get("mean") if is_number(section.get("mean")) else CONFIG["defaultMeanRating"]
     watched: set[int] = set()
+    # (TMDB show, season) → episodes watched in it (None: the season is rated, so all of it). The
+    # snapshot ties each TMDB season to one AniList entry, so a second cour inside the same TMDB
+    # season is only caught through this (with the AniList → TMDB mapping).
+    seen_seasons: dict[tuple[int, int], int | None] = {}
     disliked: set[int] = set()
     sequel_seeds: list[dict] = []
     liked: list[dict] = []
@@ -244,6 +248,17 @@ def build_profile(snapshot: dict | None) -> dict:
         seasons = sorted((s for s in item.get("seasons") or [] if is_integer(s.get("number"))), key=lambda s: s["number"])
         seen = [s for s in seasons if (item.get("id"), s["number"]) in watched_seasons and is_integer(s.get("anilistId"))]
         watched.update(s["anilistId"] for s in seen)
+        if is_integer(item.get("id")):
+            left = item.get("episodesWatched") if is_integer(item.get("episodesWatched")) else 0
+            for season in seasons:
+                if season["number"] < 1:
+                    continue
+                count = season.get("episodes") if is_integer(season.get("episodes")) else 0
+                if is_number(season.get("myRating")):
+                    seen_seasons[(item["id"], season["number"])] = None
+                elif left > 0 and count > 0:
+                    seen_seasons[(item["id"], season["number"])] = min(count, left)
+                left -= count
         rating = _rating_of(item)
         weight = rating - mean if rating is not None else CONFIG["unratedWeight"]
         genres = [g for g in item.get("genres") or [] if isinstance(g, str)]
@@ -282,6 +297,7 @@ def build_profile(snapshot: dict | None) -> dict:
         "mean": mean,
         "watchedCount": len(items),
         "watched": watched,
+        "seenSeasons": seen_seasons,
         "disliked": disliked,
         "taste": _normalize(taste),
         "sequelSeeds": sequel_seeds[: CONFIG["sequelSeeds"]],
@@ -319,6 +335,9 @@ def candidate(media: dict | None, **extra: Any) -> dict | None:
         "episodes": media.get("episodes") if is_integer(media.get("episodes")) else None,
         "year": ((media.get("startDate") or {}).get("year")) or media.get("seasonYear"),
         "season": media.get("season"),
+        # AniList's score out of 10 (shown on the card); "score" starts as the same and becomes the
+        # pool's ranking score.
+        "rating": round(score / 10, 1) if is_number(score) else None,
         "score": round(score / 10, 1) if is_number(score) else None,
         "popularity": media.get("popularity") if is_integer(media.get("popularity")) else 0,
         "genres": [g for g in media.get("genres") or [] if isinstance(g, str)],
@@ -529,6 +548,8 @@ async def build_pools(row: MovieSubscriberModel, token: str) -> dict:
             target = targets.get(c["anilistId"])
             if target and target["type"] == "tv" and target["tmdbId"] in hidden:
                 continue
+            if target and seen_on_trakt(target, c.get("episodes"), profile["seenSeasons"]):
+                continue
             if target and target["tmdbId"] in (watch_tv if target["type"] == "tv" else watch_movie):
                 c["inWatchlist"] = True
                 c["score"] = _clamp(c["score"] + CONFIG["watchlistBonus"])
@@ -581,6 +602,21 @@ async def trakt_show(tmdb_id: int) -> dict | None:
         result = {"traktId": ids["trakt"], "slug": ids["slug"], "seasons": counts}
     await write_cache(TRAKT_SHOW_NAMESPACE, {key: {"show": result, "fetchedAt": _now().isoformat()}})
     return result
+
+
+def seen_on_trakt(mapping: dict, episodes: int | None, seen_seasons: dict) -> bool:
+    """Whether the TMDB season (and episode range) an entry maps to is already watched or rated:
+    split cours share one TMDB season, so the entry's own AniList ID may not be in "watched"."""
+    if mapping.get("type") != "tv" or not is_integer(mapping.get("season")):
+        return False
+    key = (mapping["tmdbId"], mapping["season"])
+    if key not in seen_seasons:
+        return False
+    watched = seen_seasons[key]
+    if watched is None:
+        return True
+    offset = mapping.get("offset") or 0
+    return watched >= offset + episodes if is_integer(episodes) else watched > offset
 
 
 def season_target(mapping: dict, show: dict, episodes: int | None) -> dict | None:
@@ -725,7 +761,7 @@ def _ai_prompt(mode: str, candidates: list[dict], summary: dict, filters: dict) 
     for c in candidates:
         studio = (c.get("studios") or [{}])[0].get("name") or "?"
         lines.append(
-            f"{c['anilistId']}｜{c.get('title')}（{c.get('titleEn')}）｜{c.get('year') or '?'}｜{c.get('format')}/{c.get('episodes') or '?'}集｜{'/'.join(c.get('genres') or [])}｜{studio}｜{c.get('score') or '?'}/{c.get('popularity')}｜{_reason(c, mode)}"
+            f"{c['anilistId']}｜{c.get('title')}（{c.get('titleEn')}）｜{c.get('year') or '?'}｜{c.get('format')}/{c.get('episodes') or '?'}集｜{'/'.join(c.get('genres') or [])}｜{studio}｜{c.get('rating') or '?'}/{c.get('popularity')}｜{_reason(c, mode)}"
         )
     lines.append("请选一部并写理由，只回 JSON。")
     return "\n".join(lines)
@@ -807,7 +843,7 @@ async def card(c: dict) -> dict:
         "cover": c.get("cover"),
         "color": c.get("color"),
         "summary": summary,
-        "anilistScore": c.get("score"),
+        "anilistScore": c.get("rating"),
         "bangumiScore": bangumi_score,
         "malScore": mal_score,
         "inWatchlist": bool(c.get("inWatchlist")),

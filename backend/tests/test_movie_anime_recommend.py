@@ -75,7 +75,7 @@ def _media(anilist_id, **extra):
 
 def test_candidates_leave_out_what_cannot_be_recommended():
     c = ar.candidate(_media(5, relations={"edges": [{"relationType": "PREQUEL", "node": {"id": 4, "type": "ANIME"}}]}))
-    assert (c["score"], c["tags"], c["prequels"], c["malId"]) == (8.5, ["Military"], [4], 1005)
+    assert (c["rating"], c["score"], c["tags"], c["prequels"], c["malId"]) == (8.5, 8.5, ["Military"], [4], 1005)
     assert ar.candidate(_media(6, format="MUSIC")) is None
     assert ar.candidate(_media(7, status="NOT_YET_RELEASED")) is None
     assert ar.candidate(_media(8, isAdult=True)) is None
@@ -283,3 +283,32 @@ def test_granting_bonus_never_goes_below_zero():
     assert ar.grant_bonus(row, 20) == 120
     assert ar.grant_bonus(row, -500) == 0
     assert ar.bonus_of(SimpleNamespace(anime_bonus_picks=None)) == 0
+
+
+def test_a_second_cour_inside_a_watched_tmdb_season_counts_as_seen():
+    profile = ar.build_profile(
+        {
+            "anime": {
+                "items": [
+                    {
+                        "id": 196400,
+                        "episodesWatched": 24,
+                        "seasons": [{"number": 1, "episodes": 24, "anilistId": 1}],
+                    },
+                    {
+                        "id": 500,
+                        "episodesWatched": 12,
+                        "seasons": [{"number": 1, "episodes": 24, "anilistId": 2}, {"number": 2, "episodes": 10, "myRating": 8}],
+                    },
+                ]
+            }
+        }
+    )
+    seen = profile["seenSeasons"]
+    # Gundam: the second cour is episodes 13-24 of TMDB season 1, all watched.
+    assert ar.seen_on_trakt({"type": "tv", "tmdbId": 196400, "season": 1, "offset": 12}, 12, seen)
+    # Only the first 12 of 24 watched: the second cour is still new.
+    assert not ar.seen_on_trakt({"type": "tv", "tmdbId": 500, "season": 1, "offset": 12}, 12, seen)
+    # A rated season counts as watched, whatever the episode count says.
+    assert ar.seen_on_trakt({"type": "tv", "tmdbId": 500, "season": 2, "offset": 0}, 10, seen)
+    assert not ar.seen_on_trakt({"type": "movie", "tmdbId": 500, "season": None, "offset": 0}, None, seen)
