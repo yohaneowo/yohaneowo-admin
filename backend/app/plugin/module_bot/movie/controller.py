@@ -51,6 +51,17 @@ async def get_subscriber(discord_id: DiscordId, db: Db):
     return SuccessResponse(data=service.bot_view(await service.by_discord(db, discord_id)))
 
 
+@MovieInternalRouter.get("/profiles/{discord_id}")
+async def get_profile_link(discord_id: DiscordId, db: Db):
+    """For the bot's /movie profile: whose website page this Discord user's profile is. Unlike
+    /subscribers it doesn't care whether daily recommendations are on; null without an active
+    profile."""
+    row = await service.by_discord(db, discord_id)
+    if row is None or not row.active:
+        return SuccessResponse(data=None)
+    return SuccessResponse(data={"siteUserId": row.site_user_id, "traktUser": row.trakt_user, "traktName": row.trakt_name, "hasSnapshot": bool(row.snapshot)})
+
+
 @MovieInternalRouter.put("/subscribers/{discord_id}")
 async def put_subscriber(discord_id: DiscordId, db: Db):
     """Turn daily recommendations on. 404 when the Discord user has no profile yet."""
