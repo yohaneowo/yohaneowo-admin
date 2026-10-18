@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.dependencies import db_getter
 from app.plugin.module_bot.movie import recommend, service
 from app.plugin.module_bot.movie.controller import MovieInternalRouter, MovieWebsiteRouter
-from app.plugin.module_bot.movie.model import MovieCacheModel, MoviePickModel, MovieRecordModel, MovieSubscriberModel
+from app.plugin.module_bot.movie.model import AnimePickModel, MovieCacheModel, MoviePickModel, MovieRecordModel, MovieSubscriberModel, PickBonusModel
 from app.plugin.module_bot.movie.sources.trakt import TraktTokens
 from app.plugin.module_bot.movie.sync import job as sync_job
 
@@ -118,7 +118,7 @@ def test_recommend_flow():
 async def check_recommend_flow():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
-        for model in (MovieSubscriberModel, MovieRecordModel, MovieCacheModel, MoviePickModel):
+        for model in (MovieSubscriberModel, MovieRecordModel, MovieCacheModel, MoviePickModel, AnimePickModel, PickBonusModel):
             await conn.run_sync(model.__table__.create)
     factory = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -180,10 +180,16 @@ async def check_recommend_flow():
             assert second["tmdbId"] != first["tmdbId"] and second["remainingToday"] == 1
             third = (await client.post(f"/internal/movies/picks/{uid}", headers=bot, json={"genre": 35})).json()["data"]
             assert 35 in [35] and third["remainingToday"] == 0
+            assert third["bonusLeft"] == 100 and not third["usedBonus"]
+            # Past the day's three, a bonus pick (100 to start); with none left, the limit.
+            fourth = (await client.post(f"/internal/movies/picks/{uid}", headers=bot, json={})).json()["data"]
+            assert fourth["usedBonus"] and fourth["remainingToday"] == 0 and fourth["bonusLeft"] == 99
+            taken = await client.post(f"/internal/movies/owner/{uid}/bonus", headers=bot, json={"feature": "movie", "amount": -99})
+            assert taken.json()["data"]["bonus"] == 0
             limited = await client.post(f"/internal/movies/picks/{uid}", headers=bot, json={})
             assert limited.status_code == 429
             listed = (await client.get(f"/internal/movies/picks/{uid}", headers=bot)).json()["data"]
-            assert listed["remainingToday"] == 0 and len(listed["picks"]) == 3
+            assert listed["remainingToday"] == 0 and listed["bonus"] == 0 and len(listed["picks"]) == 4
             assert next(p for p in listed["picks"] if p["pickId"] == first["pickId"])["action"] == "skip"
 
             # 想看 → Trakt watchlist.
@@ -216,7 +222,7 @@ def test_backfill_pool_and_refund():
 async def check_backfill():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
-        for model in (MovieSubscriberModel, MovieRecordModel, MovieCacheModel, MoviePickModel):
+        for model in (MovieSubscriberModel, MovieRecordModel, MovieCacheModel, MoviePickModel, AnimePickModel, PickBonusModel):
             await conn.run_sync(model.__table__.create)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     world = FakeWorld(unrated=True)

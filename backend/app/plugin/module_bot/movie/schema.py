@@ -65,7 +65,7 @@ class BonusIn(BaseModel):
     """The owner's /owner bonus: bonus picks to add to a feature (negative takes some back)."""
 
     model_config = ConfigDict(extra="forbid")
-    feature: Literal["anime"]
+    feature: Literal["anime", "movie"]
     amount: int = Field(ge=-10000, le=10000)
 
 

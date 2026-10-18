@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .model import PickBonusModel
 
 # feature → the bonus a profile starts with.
-FEATURES = {"anime": 100}
+FEATURES = {"anime": 100, "movie": 100}
 
 
 async def left(db: AsyncSession, profile_id: str, feature: str) -> int:

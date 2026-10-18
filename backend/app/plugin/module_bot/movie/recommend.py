@@ -31,6 +31,7 @@ from app.core.logger import logger
 from app.plugin.module_ai_usage.gateway import service as ai_gateway
 from app.plugin.module_ai_usage.gateway.schema import AiCallerSchema, AiGatewayRequestSchema
 
+from . import bonus as bonus_picks
 from . import service
 from .model import MoviePickModel, MovieSubscriberModel
 from .sources import trakt
@@ -55,7 +56,9 @@ TMDB_GENRE_ANIMATION = 16
 
 # Three picks a day (the first plus two "换一部"), none repeated within a month. A pick whose film
 # the person then rates through the bot is given back, at most REFUNDS_A_DAY times a day. The day
-# is the Taipei calendar day, so everyone's count resets at midnight Taipei time.
+# is the Taipei calendar day, so everyone's count resets at midnight Taipei time. Past the day's
+# picks come the bonus picks (bonus.py: 100 to start, never reset, the owner adds more); a refunded
+# bonus pick goes back to the bonus.
 DAILY_PICKS = 3
 REFUNDS_A_DAY = 3
 NO_REPEAT_DAYS = 30
@@ -775,8 +778,9 @@ def _refunded_ids(picks: list[MoviePickModel], today: str) -> set[str]:
 
 
 def used_today(picks: list[MoviePickModel], today: str) -> int:
+    """The day's picks that count against the daily ones (not refunded, not taken from the bonus)."""
     refunded = _refunded_ids(picks, today)
-    return sum(1 for p in picks if p.day == today and p.pick_id not in refunded)
+    return sum(1 for p in picks if p.day == today and p.pick_id not in refunded and not p.uses_bonus)
 
 
 def _matches(c: dict, filters: dict) -> bool:
@@ -936,7 +940,10 @@ async def pick(db: AsyncSession, row: MovieSubscriberModel, filters: dict, skip_
                 previous.action = "skip"
     quota = quota_for(row)
     used = used_today(recent, today)
-    if used >= quota:
+    # The day's picks first; then one from the bonus, taken only when the pick is recorded.
+    from_bonus = used >= quota
+    bonus_left = await bonus_picks.left(db, row.profile_id, "movie")
+    if from_bonus and bonus_left <= 0:
         raise DailyLimit(next_midnight_taipei())
     recent_ids = {p.tmdb_id for p in recent}
     try:
@@ -970,16 +977,37 @@ async def pick(db: AsyncSession, row: MovieSubscriberModel, filters: dict, skip_
                 continue
             reason = ai_reason or _reason(chosen, mode, pools, pools["mean"])
             pick_row = MoviePickModel(
-                profile_id=row.profile_id, tmdb_id=chosen["tmdbId"], mode=mode, day=today, shown_at=_now().replace(tzinfo=None), title=card["title"] or str(chosen["tmdbId"]), reason=reason, data=card
+                profile_id=row.profile_id,
+                tmdb_id=chosen["tmdbId"],
+                mode=mode,
+                day=today,
+                shown_at=_now().replace(tzinfo=None),
+                title=card["title"] or str(chosen["tmdbId"]),
+                reason=reason,
+                data=card,
+                uses_bonus=from_bonus,
             )
             db.add(pick_row)
+            if from_bonus:
+                bonus_left = await bonus_picks.add(db, row.profile_id, "movie", -1)
             await db.flush()
             await _report(row.profile_id, None)
+            left = max(0, quota - used - (0 if from_bonus else 1))
             logger.info(
                 f"[movie-recommend] Pick for {row.profile_id}: {mode} → {card['title']} ({chosen['tmdbId']}) in {time.monotonic() - started:.1f}s"
-                f"{' (cold start)' if cold else ''}, filters {filters}, {quota - used - 1} left today"
+                f"{' (cold start)' if cold else ''}, filters {filters}, {left} left today, {bonus_left} bonus{' (used one)' if from_bonus else ''}"
             )
-            return {**card, "pickId": pick_row.pick_id, "mode": mode, "reason": reason, "ai": bool(ai_reason), "cold": cold, "remainingToday": quota - used - 1}
+            return {
+                **card,
+                "pickId": pick_row.pick_id,
+                "mode": mode,
+                "reason": reason,
+                "ai": bool(ai_reason),
+                "cold": cold,
+                "usedBonus": from_bonus,
+                "remainingToday": left,
+                "bonusLeft": bonus_left,
+            }
     await _report(row.profile_id, None)
     logger.info(f"[movie-recommend] Nothing to pick for {row.profile_id} with filters {filters}")
     raise NothingToPick()
@@ -1040,6 +1068,10 @@ async def _remaining(db: AsyncSession, row: MovieSubscriberModel) -> int:
     return max(0, quota_for(row) - await picks_today(db, row.profile_id))
 
 
+async def _quota_out(db: AsyncSession, row: MovieSubscriberModel) -> dict:
+    return {"remainingToday": await _remaining(db, row), "bonusLeft": await bonus_picks.left(db, row.profile_id, "movie")}
+
+
 async def watched(db: AsyncSession, row: MovieSubscriberModel, pick_id: str, rating: int | None) -> dict:
     """看过了 / 补评分. With a rating from the person it is written to Trakt (plus one play for 看过了,
     remembered so it can be undone) and the pick is refunded. Without one: a rating already on
@@ -1073,7 +1105,7 @@ async def watched(db: AsyncSession, row: MovieSubscriberModel, pick_id: str, rat
         await db.flush()
         await _drop_from_pool(row.profile_id, found.tmdb_id)
         logger.info(f"[movie-recommend] 看过了 for {row.profile_id}: {found.title} ({found.tmdb_id}) already rated {existing}")
-        return {"pickId": pick_id, "title": found.title, "action": found.action, "rated": True, "rating": int(existing), "own": False, "refunded": False, "remainingToday": await _remaining(db, row)}
+        return {"pickId": pick_id, "title": found.title, "action": found.action, "rated": True, "rating": int(existing), "own": False, "refunded": False, **await _quota_out(db, row)}
     changing = found.own_rating and found.action in ("watched", "rated")
     status, _ = await _trakt("POST", "/sync/ratings", token, json={"movies": [{**movie, "rating": rating, "rated_at": now}]})
     if status not in (200, 201):
@@ -1099,10 +1131,15 @@ async def watched(db: AsyncSession, row: MovieSubscriberModel, pick_id: str, rat
             locked.sync_requested = True
     picks = await _recent_picks(db, row.profile_id)
     refunded = found.pick_id in _refunded_ids(picks, found.day) and not changing
+    if refunded and found.uses_bonus:
+        # A refunded bonus pick goes back to the bonus (and from then on counts as a day's pick,
+        # refunded, so it costs nothing either way).
+        found.uses_bonus = False
+        await bonus_picks.add(db, row.profile_id, "movie", 1)
     logger.info(
         f"[movie-recommend] {'补评分' if backfill else '看过了'} for {row.profile_id}: {found.title} ({found.tmdb_id}) rating {rating}{' (changed)' if changing else ''}{' (refunded)' if refunded else ''}"
     )
-    return {"pickId": pick_id, "title": found.title, "action": found.action, "rated": True, "rating": rating, "own": True, "refunded": refunded, "remainingToday": await _remaining(db, row)}
+    return {"pickId": pick_id, "title": found.title, "action": found.action, "rated": True, "rating": rating, "own": True, "refunded": refunded, **await _quota_out(db, row)}
 
 
 async def unrate(db: AsyncSession, row: MovieSubscriberModel, pick_id: str) -> dict:
@@ -1131,7 +1168,7 @@ async def unrate(db: AsyncSession, row: MovieSubscriberModel, pick_id: str) -> d
         locked = await service.by_id(session, row.profile_id, lock=True)
         if locked:
             locked.sync_requested = True
-    return {"pickId": pick_id, "title": found.title, "action": None, "remainingToday": await _remaining(db, row)}
+    return {"pickId": pick_id, "title": found.title, "action": None, **await _quota_out(db, row)}
 
 
 async def picks_today(db: AsyncSession, profile_id: str) -> int:

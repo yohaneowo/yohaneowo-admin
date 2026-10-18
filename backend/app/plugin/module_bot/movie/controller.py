@@ -131,8 +131,9 @@ async def list_picks(discord_id: DiscordId, db: Db):
     recent = await recommend._recent_picks(db, row.profile_id)  # noqa: SLF001
     return SuccessResponse(
         data={
-            "remainingToday": max(0, recommend.quota_for(row) - await recommend.picks_today(db, row.profile_id)),
+            "remainingToday": await recommend._remaining(db, row),  # noqa: SLF001
             "quota": recommend.quota_for(row),
+            "bonus": await bonus_picks.left(db, row.profile_id, "movie"),
             "traktConnected": service.tokens_of(row) is not None and not row.trakt_reauth,
             "picks": [recommend.pick_out(p) for p in sorted(recent, key=lambda p: p.shown_at or service.utcnow(), reverse=True)],
         }
@@ -206,7 +207,7 @@ async def list_anime_picks(discord_id: DiscordId, db: Db):
 
 async def _owner_features(db: AsyncSession, row: MovieSubscriberModel) -> list[dict]:
     """Per feature with a bonus: the day's picks left, the daily quota and the bonus left."""
-    daily = {"anime": (anime_recommend.quota_left, anime_recommend.quota_for)}
+    daily = {"anime": (anime_recommend.quota_left, anime_recommend.quota_for), "movie": (recommend._remaining, recommend.quota_for)}  # noqa: SLF001
     return [
         {
             "feature": feature,

@@ -95,6 +95,8 @@ class MoviePickModel(MappedBase):
     own_rating: Mapped[bool] = mapped_column(Boolean, default=False)
     history_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     acted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Taken from the bonus picks (the day's were used up); a refund gives the bonus pick back.
+    uses_bonus: Mapped[bool] = mapped_column(Boolean, default=False)
     # The card the bot showed (title, overview, poster…), so /movie status can list it.
     data: Mapped[dict] = mapped_column(JSON)
 

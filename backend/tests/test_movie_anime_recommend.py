@@ -300,6 +300,8 @@ def test_bonus_starts_at_the_features_amount_and_never_goes_below_zero():
     assert asyncio.run(bonus.left(db, "p", "anime")) == 120
     assert asyncio.run(bonus.add(db, "p", "anime", -500)) == 0
     assert asyncio.run(bonus.left(db, "q", "anime")) == 100
+    # Each feature has its own.
+    assert asyncio.run(bonus.left(db, "p", "movie")) == 100
 
 
 def test_a_second_cour_inside_a_watched_tmdb_season_counts_as_seen():
