@@ -40,8 +40,11 @@ PARTIAL_HOURS = 6
 MATCH_DAYS = 30
 MISS_DAYS = 7
 SUBJECT_DAYS = 7
-# One request's whole budget; building the list comes out of it first.
+# A request that had to build the list spends up to REQUEST_SECONDS in all (the build comes out of
+# it); one served from the cache only CACHED_TOP_UP_SECONDS, so an open card is quick and the
+# background run does the rest.
 REQUEST_SECONDS = 20
+CACHED_TOP_UP_SECONDS = 1.5
 MIN_TOP_UP_SECONDS = 2
 BACKGROUND_SECONDS = 1200
 MAX_PAGES = 12
@@ -266,15 +269,16 @@ async def lookup(anilist_id: int | None, bangumi_id: int | None, lang: str = "zh
     started = time.monotonic()
     key = f"{anilist_id or 0}:{bangumi_id or 0}"
     card: dict[str, Any] | None = (await read_cache(CARD_NAMESPACE, [key])).get(key)
+    budget = CACHED_TOP_UP_SECONDS
     if not (_fresh(card, hours=PARTIAL_HOURS) if (card or {}).get("partial") else _fresh(card, days=CARD_DAYS)):
         built = await _build(anilist_id, bangumi_id)
         if built is not None:
             card = built
             await write_cache(CARD_NAMESPACE, {key: built})
+            budget = max(MIN_TOP_UP_SECONDS, REQUEST_SECONDS - (time.monotonic() - started))
     if not card:
         return None
     works = sorted(card.get("works") or [], key=lambda w: -(w.get("year") or 0))
-    budget = max(MIN_TOP_UP_SECONDS, REQUEST_SECONDS - (time.monotonic() - started))
     works, briefs, mal, pending = await _top_up(works, budget)
     if pending:
         _fill_later(key, works)

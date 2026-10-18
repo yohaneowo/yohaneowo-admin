@@ -176,3 +176,25 @@ def test_unmatched_works_are_searched_by_title_and_year():
     assert calls["search"].await_count == 1
     assert calls["search"].await_args.args[2:] == ("2014-01-01", "2016-12-31")
     assert store[("studio_work_bangumi", "1")]["bangumiId"] == 77
+
+
+def test_a_cached_card_answers_quickly_and_leaves_scores_to_the_background():
+    scheduled = []
+    built = {
+        "name": "MADHOUSE",
+        "nameEn": "MADHOUSE",
+        "logo": None,
+        "description": None,
+        "works": [{"anilistId": 1, "malId": 1535, "bangumiId": 1, "native": "DEATH NOTE", "title": "死亡笔记", "titleEn": "Death Note", "year": 2006}],
+        "partial": False,
+        "fetchedAt": studios._now(),
+    }
+    with (
+        patch.object(studios, "CACHED_TOP_UP_SECONDS", -1),
+        patch.object(studios, "_fill_later", lambda key, works: scheduled.append(key)),
+    ):
+        zh, _, calls, _ = _run(cache={("studio_card_v3", "11:603"): built}, subject={1: {"rating": {"score": 8.1}}}, mal={})
+    # Nothing rebuilt, no score fetched in the request; the background takes over.
+    assert calls["anilist"].await_count == 0 and calls["subject"].await_count == 0
+    assert zh["works"][0]["title"] == "死亡笔记" and zh["scoresPending"] is True
+    assert scheduled == ["11:603", "11:603"]
