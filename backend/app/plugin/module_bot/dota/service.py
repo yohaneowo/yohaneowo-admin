@@ -21,6 +21,20 @@ RECENT = 10
 PARSE_WAIT = timedelta(hours=24)
 # Only matches this fresh are sent (a check that was down for a day doesn't DM yesterday's games).
 SEND_WINDOW = timedelta(hours=12)
+# A match still unparsed this long after it ended is sent back to STRATZ's parser, again after
+# REPARSE_AGAIN, at most REPARSE_TIMES times. Kept in memory: a restart only means one more ask.
+REPARSE_AFTER = timedelta(minutes=30)
+REPARSE_AGAIN = timedelta(hours=3)
+REPARSE_TIMES = 3
+_reparsed: dict[int, tuple[int, datetime]] = {}
+
+
+def wants_reparse(match_id: int, ended: datetime, now: datetime) -> bool:
+    """Whether to ask STRATZ to parse this unparsed match again now."""
+    if now - ended < REPARSE_AFTER:
+        return False
+    times, last = _reparsed.get(match_id, (0, None))
+    return times < REPARSE_TIMES and (last is None or now - last >= REPARSE_AGAIN)
 
 
 def utcnow() -> datetime:
@@ -114,6 +128,19 @@ async def _store(db: AsyncSession, rows: list[dict], *, notify_for: DotaProfileM
     return added
 
 
+async def _nudge(db: AsyncSession, row: dict, now: datetime) -> None:
+    ended = row["start_time"] + timedelta(seconds=row["duration"])
+    if not wants_reparse(row["match_id"], ended, now):
+        return
+    times = _reparsed.get(row["match_id"], (0, None))[0] + 1
+    _reparsed[row["match_id"]] = (times, now)
+    try:
+        await stratz.retry_parse(db, row["match_id"])
+        logger.info(f"[dota] asked STRATZ to parse {row['match_id']} again ({times}/{REPARSE_TIMES})")
+    except Exception as e:  # a failed nudge never fails the check
+        logger.warning(f"[dota] reparse request for {row['match_id']} failed: {e}")
+
+
 async def check(db: AsyncSession, profile: DotaProfileModel) -> None:
     """The newest ranked matches, then (until done) one page of history."""
     now = utcnow()
@@ -122,8 +149,9 @@ async def check(db: AsyncSession, profile: DotaProfileModel) -> None:
         row = stratz.to_row(profile.account_id, match)
         if row is None:
             continue
-        # Not parsed yet: wait for STRATZ, unless it has been too long.
+        # Not parsed yet: wait for STRATZ (nudging it when it's slow), unless it has been too long.
         if not row["parsed"] and now - row["start_time"] < PARSE_WAIT:
+            await _nudge(db, row, now)
             continue
         fresh.append(row)
     added = await _store(db, fresh, notify_for=profile, now=now)

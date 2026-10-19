@@ -50,6 +50,19 @@ def test_the_first_blood_death_is_marked():
     assert not any(e["fb"] for e in row["death_events"])
 
 
+def test_slow_matches_are_sent_back_to_the_parser_a_few_times():
+    now = datetime(2026, 10, 19, 12, 0)
+    service._reparsed.clear()
+    assert not service.wants_reparse(1, now - timedelta(minutes=10), now)
+    assert service.wants_reparse(1, now - timedelta(minutes=40), now)
+    service._reparsed[1] = (1, now)
+    assert not service.wants_reparse(1, now - timedelta(minutes=40), now + timedelta(hours=1))
+    assert service.wants_reparse(1, now - timedelta(minutes=40), now + timedelta(hours=3))
+    service._reparsed[1] = (3, now)
+    assert not service.wants_reparse(1, now - timedelta(minutes=40), now + timedelta(days=1))
+    service._reparsed.clear()
+
+
 def test_who_gets_a_dm():
     now = datetime(2026, 10, 19, 12, 0)
     profile = SimpleNamespace(notify=True, discord_id="123456789012345678", linked_at=now - timedelta(days=1))
@@ -74,6 +87,14 @@ def test_a_check_queues_new_matches_and_stores_history(monkeypatch):
         return recent if take == service.RECENT else history[skip : skip + take]
 
     monkeypatch.setattr(stratz, "ranked_matches", ranked_matches)
+    asked = []
+
+    async def retry_parse(db, match_id):
+        asked.append(match_id)
+        return True
+
+    monkeypatch.setattr(stratz, "retry_parse", retry_parse)
+    service._reparsed.clear()
 
     async def run():
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")

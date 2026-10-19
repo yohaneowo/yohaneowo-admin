@@ -58,6 +58,12 @@ async def ranked_matches(db: AsyncSession, account_id: int, take: int, skip: int
     return ((data.get("player") or {}).get("matches")) or []
 
 
+async def retry_parse(db: AsyncSession, match_id: int) -> bool:
+    """Asks STRATZ to fetch and parse the match again (the 重新提交解析 button on its site)."""
+    data = await _query(db, f"mutation {{ retryMatchDownload(matchId: {int(match_id)}) }}")
+    return bool(data.get("retryMatchDownload"))
+
+
 def to_row(account_id: int, match: dict) -> dict | None:
     """A match as bot_dota_match columns, or None without this player's line. Deaths keep STRATZ's
     map cells (x, y about 64–192; y grows to the north), seconds, killer hero, gold lost, seconds dead,
