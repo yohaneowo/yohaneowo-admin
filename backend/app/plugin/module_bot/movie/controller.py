@@ -11,7 +11,7 @@ from app.core.base_schema import AuthSchema
 from app.core.dependencies import AuthPermission, db_getter
 
 from ..internal_auth import verify_bot_token
-from . import anime_recommend, credits, people, recommend, service
+from . import anime_recommend, credits, people, picks_view, recommend, service
 from . import bonds as bonds_module
 from . import bonus as bonus_picks
 from .auth import verify_site_token
@@ -436,6 +436,15 @@ async def website_set_anime_settings(site_user_id: SiteUserId, data: AnimeSettin
         raise HTTPException(404, "noProfile")
     row.anime_airing = data.airing
     return SuccessResponse(data={"airing": bool(row.anime_airing)})
+
+
+@MovieWebsiteRouter.get("/users/{site_user_id}/picks")
+async def website_picks(site_user_id: SiteUserId, db: Db, kind: Literal["movie", "anime"] = "movie"):
+    """The 推荐 page: a kind's quota, today's picks and the last 30 days (read-only)."""
+    row = await service.by_site_user(db, site_user_id)
+    if row is None or not row.active:
+        raise HTTPException(404, "noProfile")
+    return SuccessResponse(data=await picks_view.view(db, row, kind))
 
 
 @MovieWebsiteRouter.put("/users/{site_user_id}/region")
