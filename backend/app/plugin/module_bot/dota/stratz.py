@@ -53,19 +53,21 @@ async def ranked_matches(db: AsyncSession, account_id: int, take: int, skip: int
     data = await _query(
         db,
         f"{{ player(steamAccountId: {int(account_id)}) {{ matches(request: {{ take: {int(take)}, skip: {int(skip)}, lobbyTypeIds: [{RANKED}] }}) {{"
-        f" id startDateTime durationSeconds parsedDateTime players(steamAccountId: {int(account_id)}) {{ {PLAYER_FIELDS} }} }} }} }}",
+        f" id startDateTime durationSeconds parsedDateTime firstBloodTime players(steamAccountId: {int(account_id)}) {{ {PLAYER_FIELDS} }} }} }} }}",
     )
     return ((data.get("player") or {}).get("matches")) or []
 
 
 def to_row(account_id: int, match: dict) -> dict | None:
     """A match as bot_dota_match columns, or None without this player's line. Deaths keep STRATZ's
-    map cells (x, y about 64–192; y grows to the north), seconds, killer hero, gold lost, seconds dead."""
+    map cells (x, y about 64–192; y grows to the north), seconds, killer hero, gold lost, seconds dead,
+    and fb when that death was the match's first blood."""
     players = match.get("players") or []
     if not players or not match.get("id") or not match.get("startDateTime"):
         return None
     player = players[0]
     events = ((player.get("stats") or {}).get("deathEvents")) or []
+    first_blood = match.get("firstBloodTime")
     return {
         "account_id": account_id,
         "match_id": int(match["id"]),
@@ -86,6 +88,7 @@ def to_row(account_id: int, match: dict) -> dict | None:
                 "by": int(e.get("attacker") or 0),
                 "gold": int(e.get("goldLost") or 0),
                 "dead": int(e.get("timeDead") or 0),
+                "fb": first_blood is not None and e.get("time") == first_blood,
             }
             for e in events
             if e.get("positionX") is not None and e.get("positionY") is not None

@@ -14,6 +14,7 @@ from app.plugin.module_bot.dota.model import DotaMatchModel, DotaProfileModel
 def _match(match_id, start, *, parsed=True, deaths=2):
     return {
         "id": match_id,
+        "firstBloodTime": 100,
         "startDateTime": int(start.replace(tzinfo=UTC).timestamp()),
         "durationSeconds": 2400,
         "parsedDateTime": int(start.replace(tzinfo=UTC).timestamp()) + 600 if parsed else None,
@@ -35,11 +36,18 @@ def test_a_stratz_match_becomes_a_row():
     start = datetime(2026, 10, 19, 10, 0)
     row = stratz.to_row(1, _match(9, start))
     assert (row["match_id"], row["hero_id"], row["won"], row["imp"], row["parsed"]) == (9, 4, True, 12, True)
-    assert row["death_events"][0] == {"t": 100, "x": 120, "y": 90, "by": 26, "gold": 50, "dead": 20}
+    assert row["death_events"][0] == {"t": 100, "x": 120, "y": 90, "by": 26, "gold": 50, "dead": 20, "fb": True}
     assert row["start_time"] == start
     assert stratz.to_row(1, {"id": 9, "startDateTime": 1, "players": []}) is None
     unparsed = stratz.to_row(1, _match(10, start, parsed=False))
     assert unparsed["parsed"] is False and unparsed["death_events"] == []
+
+
+def test_the_first_blood_death_is_marked():
+    row = stratz.to_row(1, _match(9, datetime(2026, 10, 19, 10, 0), deaths=3))
+    assert [e["fb"] for e in row["death_events"]] == [True, False, False]
+    row = stratz.to_row(1, {**_match(9, datetime(2026, 10, 19, 10, 0)), "firstBloodTime": None})
+    assert not any(e["fb"] for e in row["death_events"])
 
 
 def test_who_gets_a_dm():

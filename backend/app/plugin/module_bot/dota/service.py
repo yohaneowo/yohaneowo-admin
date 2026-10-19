@@ -93,13 +93,19 @@ def should_send(profile: DotaProfileModel, row: dict, now: datetime) -> bool:
 
 
 async def _store(db: AsyncSession, rows: list[dict], *, notify_for: DotaProfileModel | None, now: datetime) -> int:
-    """Stores the matches not stored yet; a new one is queued for a DM when notify_for wants it."""
+    """Stores the matches not stored yet; a new one is queued for a DM when notify_for wants it. A
+    stored one takes what STRATZ says now (deaths, IMP, parsed), never its DM state."""
     if not rows:
         return 0
-    known = set((await db.scalars(select(DotaMatchModel.match_id).where(DotaMatchModel.account_id == rows[0]["account_id"], DotaMatchModel.match_id.in_([r["match_id"] for r in rows])))).all())
+    known = {m.match_id: m for m in await db.scalars(select(DotaMatchModel).where(DotaMatchModel.account_id == rows[0]["account_id"], DotaMatchModel.match_id.in_([r["match_id"] for r in rows])))}
     added = 0
     for row in rows:
-        if row["match_id"] in known:
+        stored = known.get(row["match_id"])
+        if stored is not None:
+            # A match parsed later (or read again for new fields) gets the fuller data; an unparsed
+            # answer never replaces parsed data.
+            if row["parsed"] or not stored.parsed:
+                stored.death_events, stored.imp, stored.parsed = row["death_events"], row["imp"], row["parsed"]
             continue
         state = "pending" if notify_for is not None and should_send(notify_for, row, now) else "none"
         db.add(DotaMatchModel(**row, notify_state=state, created_at=now))
