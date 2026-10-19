@@ -1,6 +1,7 @@
 """The website's 推荐 page: one kind of recommendation (films from /movie recommend, anime from
 /anime recommend) for a profile, read-only. Both kinds' picks come out in one shape, so the page
-renders them the same way: today's picks (the daily quota's cards) and the last 30 days."""
+renders them the same way: today's picks (the daily quota's cards) and the last 30 days (today
+included, newest first)."""
 
 from typing import Literal
 
@@ -71,5 +72,5 @@ async def view(db: AsyncSession, row: MovieSubscriberModel, kind: Kind) -> dict:
         # The bot finds the profile by Discord ID: without one, picks can't be drawn yet.
         "discordLinked": bool(row.discord_id),
         "todayPicks": [_out(p, kind) for p in reversed(picks) if p.day == today],
-        "recent": [_out(p, kind) for p in picks if p.day != today][:RECENT_LIMIT],
+        "recent": [_out(p, kind) for p in picks][:RECENT_LIMIT],
     }
