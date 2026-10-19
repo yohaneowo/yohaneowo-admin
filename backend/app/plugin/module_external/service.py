@@ -26,6 +26,7 @@ PROVIDERS: dict[str, dict] = {
     "anilist": {"label": "AniList", "env": None, "daily_limit": None, "note": "不需要 key，每分钟约 30 次（请求间隔 2.1 秒）"},
     "bangumi": {"label": "Bangumi", "env": None, "daily_limit": None, "note": "不需要 key，请求间隔 0.5 秒"},
     "mal": {"label": "MyAnimeList", "env": "MAL_CLIENT_ID", "daily_limit": None, "note": "有 MAL_CLIENT_ID 用官方 API，没有就走 Jikan"},
+    "stratz": {"label": "STRATZ", "env": "STRATZ_API_TOKEN", "daily_limit": None, "note": "DotaHub 的死亡地图：每 5 分钟查一次已连结帐号的天梯比赛，补历史时一页 100 场"},
 }
 WARN_SHARE = 0.9
 
