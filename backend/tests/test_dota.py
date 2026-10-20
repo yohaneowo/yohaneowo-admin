@@ -184,6 +184,9 @@ def test_a_check_queues_new_matches_and_stores_history(monkeypatch):
         factory = async_sessionmaker(engine, expire_on_commit=False)
         async with factory() as db, db.begin():
             profile = await service.link(db, "site-a", "76561198304403520", 344137792, "123456789012345678")
+            # A new link doesn't DM until it's asked for; this test asks.
+            assert profile.notify is False
+            profile.notify = True
             profile.linked_at = now - timedelta(hours=2)
             await service.check(db, profile)
             rows = {m.match_id: m for m in await db.scalars(select(DotaMatchModel))}

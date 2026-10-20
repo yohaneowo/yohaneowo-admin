@@ -55,7 +55,7 @@ async def link(db: AsyncSession, site_user_id: str, steam_id: str, account_id: i
         await db.flush()
         row = None
     if row is None:
-        row = DotaProfileModel(site_user_id=site_user_id, steam_id=steam_id, account_id=account_id, linked_at=utcnow(), backfill_skip=0, backfill_done=False, notify=True)
+        row = DotaProfileModel(site_user_id=site_user_id, steam_id=steam_id, account_id=account_id, linked_at=utcnow(), backfill_skip=0, backfill_done=False, notify=False)
         db.add(row)
     if discord_id:
         row.discord_id = discord_id

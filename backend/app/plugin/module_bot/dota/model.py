@@ -22,8 +22,9 @@ class DotaProfileModel(MappedBase):
     # Dota's 32-bit account id (SteamID64 minus 76561197960265728), what STRATZ and OpenDota use.
     account_id: Mapped[int] = mapped_column(BigInteger)
     discord_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    # DM the death map after each ranked match (on by default; the account settings turn it off).
-    notify: Mapped[bool] = mapped_column(Boolean, default=True)
+    # DM the death map after each ranked match: off until asked for (the website's settings, later a
+    # Discord command).
+    notify: Mapped[bool] = mapped_column(Boolean, default=False)
     linked_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     next_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # The history: ranked matches read so far, newest first (STRATZ pages of 100).
