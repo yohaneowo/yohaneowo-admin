@@ -26,7 +26,11 @@ def token() -> str:
     return DotaSettings().STRATZ_API_TOKEN
 
 
-PLAYER_FIELDS = "heroId isVictory kills deaths assists imp stats { deathEvents { time positionX positionY attacker goldLost timeDead } }"
+PLAYER_FIELDS = (
+    "heroId isVictory kills deaths assists imp position lane award goldPerMinute experiencePerMinute networth"
+    " numLastHits numDenies heroDamage stats { deathEvents { time positionX positionY attacker goldLost timeDead }"
+    " networthPerMinute impPerMinute lastHitsPerMinute itemPurchases { time itemId } }"
+)
 
 
 async def _query(db: AsyncSession, query: str) -> dict:
@@ -64,6 +68,36 @@ async def retry_parse(db: AsyncSession, match_id: int) -> bool:
     return bool(data.get("retryMatchDownload"))
 
 
+def details(player: dict) -> dict | None:
+    """The economy and IMP of one parsed match: position (1–5), lane, STRATZ's award, GPM, XPM, final
+    net worth, last hits, denies, hero damage; per minute the net worth (running total), IMP (at that
+    minute) and last hits (that minute's); each item's first purchase as [seconds, item id]."""
+    stats = player.get("stats") or {}
+    if not stats.get("networthPerMinute"):
+        return None
+    position = str(player.get("position") or "")
+    first: dict[int, int] = {}
+    for p in stats.get("itemPurchases") or []:
+        item, time = p.get("itemId"), p.get("time")
+        if item is not None and time is not None and item not in first:
+            first[int(item)] = int(time)
+    return {
+        "pos": int(position[-1]) if position.startswith("POSITION_") and position[-1].isdigit() else None,
+        "lane": player.get("lane"),
+        "award": player.get("award") if player.get("award") not in (None, "NONE") else None,
+        "gpm": int(player.get("goldPerMinute") or 0),
+        "xpm": int(player.get("experiencePerMinute") or 0),
+        "nw": int(player.get("networth") or 0),
+        "lh": int(player.get("numLastHits") or 0),
+        "dn": int(player.get("numDenies") or 0),
+        "hd": int(player.get("heroDamage") or 0),
+        "nwm": [int(v or 0) for v in stats.get("networthPerMinute") or []],
+        "impm": [int(v or 0) for v in stats.get("impPerMinute") or []],
+        "lhm": [int(v or 0) for v in stats.get("lastHitsPerMinute") or []],
+        "items": sorted(([t, i] for i, t in first.items()), key=lambda p: p[0]),
+    }
+
+
 def to_row(account_id: int, match: dict) -> dict | None:
     """A match as bot_dota_match columns, or None without this player's line. Deaths keep STRATZ's
     map cells (x, y about 64–192; y grows to the north), seconds, killer hero, gold lost, seconds dead,
@@ -86,6 +120,7 @@ def to_row(account_id: int, match: dict) -> dict | None:
         "assists": int(player.get("assists") or 0),
         "imp": int(player["imp"]) if isinstance(player.get("imp"), int) else None,
         "parsed": bool(match.get("parsedDateTime")),
+        "details": details(player) if match.get("parsedDateTime") else None,
         "death_events": [
             {
                 "t": int(e.get("time") or 0),

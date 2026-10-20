@@ -26,7 +26,24 @@ def _match(match_id, start, *, parsed=True, deaths=2):
                 "deaths": deaths,
                 "assists": 7,
                 "imp": 12,
-                "stats": {"deathEvents": [{"time": 100 * (i + 1), "positionX": 120, "positionY": 90, "attacker": 26, "goldLost": 50, "timeDead": 20} for i in range(deaths)]} if parsed else None,
+                "position": "POSITION_2",
+                "lane": "MID_LANE",
+                "award": "MVP",
+                "goldPerMinute": 600,
+                "experiencePerMinute": 700,
+                "networth": 20000,
+                "numLastHits": 250,
+                "numDenies": 10,
+                "heroDamage": 30000,
+                "stats": {
+                    "networthPerMinute": [600, 900, 1300],
+                    "impPerMinute": [0, 5, 12],
+                    "lastHitsPerMinute": [0, 4, 6],
+                    "itemPurchases": [{"time": -60, "itemId": 44}, {"time": 30, "itemId": 44}, {"time": 900, "itemId": 116}],
+                    "deathEvents": [{"time": 100 * (i + 1), "positionX": 120, "positionY": 90, "attacker": 26, "goldLost": 50, "timeDead": 20} for i in range(deaths)],
+                }
+                if parsed
+                else None,
             }
         ],
     }
@@ -41,6 +58,16 @@ def test_a_stratz_match_becomes_a_row():
     assert stratz.to_row(1, {"id": 9, "startDateTime": 1, "players": []}) is None
     unparsed = stratz.to_row(1, _match(10, start, parsed=False))
     assert unparsed["parsed"] is False and unparsed["death_events"] == []
+
+
+def test_a_parsed_match_keeps_its_economy_and_imp():
+    row = stratz.to_row(1, _match(9, datetime(2026, 10, 19, 10, 0)))
+    d = row["details"]
+    assert (d["pos"], d["lane"], d["award"], d["gpm"], d["lh"]) == (2, "MID_LANE", "MVP", 600, 250)
+    assert d["nwm"] == [600, 900, 1300] and d["impm"] == [0, 5, 12] and d["lhm"] == [0, 4, 6]
+    # Only each item's first purchase, in time order.
+    assert d["items"] == [[-60, 44], [900, 116]]
+    assert stratz.to_row(1, _match(10, datetime(2026, 10, 19, 10, 0), parsed=False))["details"] is None
 
 
 def test_the_first_blood_death_is_marked():

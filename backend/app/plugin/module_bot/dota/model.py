@@ -55,6 +55,8 @@ class DotaMatchModel(MappedBase):
     # False: STRATZ never parsed it, so the positions are unknown (kept for the counts).
     parsed: Mapped[bool] = mapped_column(Boolean, default=True)
     death_events: Mapped[list] = mapped_column(JSON, default=list)
+    # Economy and IMP for the DotaHub pages (stratz.details); None until read with them.
+    details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # none (history, or no DM wanted), pending (for the bot), sent.
     notify_state: Mapped[str] = mapped_column(String(16), default="none")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)

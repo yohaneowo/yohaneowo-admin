@@ -85,6 +85,30 @@ async def recent_deaths(db: AsyncSession, account_id: int, limit: int | None) ->
     return list(await db.scalars(query))
 
 
+def details_out(row: DotaMatchModel) -> dict:
+    """A match for the economy and IMP pages: no deaths, the details instead."""
+    return {
+        "matchId": row.match_id,
+        "heroId": row.hero_id,
+        "won": row.won,
+        "startTime": int(row.start_time.replace(tzinfo=UTC).timestamp()),
+        "duration": row.duration,
+        "kills": row.kills,
+        "deaths": row.deaths,
+        "assists": row.assists,
+        "imp": row.imp,
+        "details": row.details,
+    }
+
+
+async def recent_details(db: AsyncSession, account_id: int, limit: int | None) -> list[DotaMatchModel]:
+    """The newest stored matches that have details (all of them when limit is None)."""
+    query = select(DotaMatchModel).where(DotaMatchModel.account_id == account_id, DotaMatchModel.details.is_not(None)).order_by(DotaMatchModel.start_time.desc())
+    if limit:
+        query = query.limit(limit)
+    return list(await db.scalars(query))
+
+
 def match_out(row: DotaMatchModel) -> dict:
     return {
         "matchId": row.match_id,
@@ -120,6 +144,8 @@ async def _store(db: AsyncSession, rows: list[dict], *, notify_for: DotaProfileM
             # answer never replaces parsed data.
             if row["parsed"] or not stored.parsed:
                 stored.death_events, stored.imp, stored.parsed = row["death_events"], row["imp"], row["parsed"]
+                if row["details"] is not None:
+                    stored.details = row["details"]
             continue
         state = "pending" if notify_for is not None and should_send(notify_for, row, now) else "none"
         db.add(DotaMatchModel(**row, notify_state=state, created_at=now))
