@@ -99,6 +99,16 @@ async def get_details(site_user_id: SiteUserId, db: Db, limit: Annotated[int, Qu
     return SuccessResponse(data={"historyDone": row.backfill_done, "matches": [service.details_out(m) for m in matches]})
 
 
+@DotaWebsiteRouter.get("/users/{site_user_id}/bracket")
+async def get_bracket(site_user_id: SiteUserId, db: Db, limit: Annotated[int, Query(ge=0, le=100_000)] = 100):
+    """The other nine players of the newest stored ranked matches: the player's bracket (limit 0: all)."""
+    row = await db.get(DotaProfileModel, site_user_id)
+    if row is None:
+        raise HTTPException(404, "notLinked")
+    matches = await service.recent_bracket(db, row.account_id, limit or None)
+    return SuccessResponse(data={"matches": [service.bracket_out(m) for m in matches]})
+
+
 @DotaInternalRouter.get("/notifications")
 async def get_notifications(db: Db):
     """Ranked matches whose death-map DM the bot hasn't sent yet."""

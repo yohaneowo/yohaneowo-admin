@@ -101,6 +101,28 @@ def details_out(row: DotaMatchModel) -> dict:
     }
 
 
+def bracket_out(row: DotaMatchModel) -> dict:
+    """A match's other nine players with what comparing needs from the player's side: when it was,
+    how long, which side the player was on and the team's lead (the others' lead follows from it)."""
+    details = row.details or {}
+    return {
+        "matchId": row.match_id,
+        "startTime": int(row.start_time.replace(tzinfo=UTC).timestamp()),
+        "duration": row.duration,
+        "rad": details.get("rad"),
+        "lead": details.get("lead") or [],
+        "others": row.others or [],
+    }
+
+
+async def recent_bracket(db: AsyncSession, account_id: int, limit: int | None) -> list[DotaMatchModel]:
+    """The newest stored matches whose other players are read (all of them when limit is None)."""
+    query = select(DotaMatchModel).where(DotaMatchModel.account_id == account_id, DotaMatchModel.others.is_not(None), DotaMatchModel.details.is_not(None)).order_by(DotaMatchModel.start_time.desc())
+    if limit:
+        query = query.limit(limit)
+    return list(await db.scalars(query))
+
+
 async def recent_details(db: AsyncSession, account_id: int, limit: int | None) -> list[DotaMatchModel]:
     """The newest stored matches that have details (all of them when limit is None)."""
     query = select(DotaMatchModel).where(DotaMatchModel.account_id == account_id, DotaMatchModel.details.is_not(None)).order_by(DotaMatchModel.start_time.desc())
@@ -167,6 +189,31 @@ async def _nudge(db: AsyncSession, row: dict, now: datetime) -> None:
         logger.warning(f"[dota] reparse request for {row['match_id']} failed: {e}")
 
 
+# How many stored matches get their other nine players per check (a request covers ten).
+OTHERS_PER_CHECK = 30
+
+
+async def fill_others(db: AsyncSession, profile: DotaProfileModel) -> bool:
+    """Reads the other nine players of stored parsed matches that don't have them yet; True while
+    some are left (the check then comes back sooner)."""
+    rows = list(
+        await db.scalars(
+            select(DotaMatchModel)
+            .where(DotaMatchModel.account_id == profile.account_id, DotaMatchModel.parsed.is_(True), DotaMatchModel.others.is_(None))
+            .order_by(DotaMatchModel.start_time.desc())
+            .limit(OTHERS_PER_CHECK + 1)
+        )
+    )
+    batch = rows[:OTHERS_PER_CHECK]
+    for i in range(0, len(batch), stratz.MATCHES_PER_REQUEST):
+        chunk = batch[i : i + stratz.MATCHES_PER_REQUEST]
+        found = await stratz.matches_with_everyone(db, [r.match_id for r in chunk])
+        for row in chunk:
+            # STRATZ without the match: an empty list, so it isn't asked for again.
+            row.others = stratz.others_of(profile.account_id, found[row.match_id]) if row.match_id in found else []
+    return len(rows) > OTHERS_PER_CHECK
+
+
 async def check(db: AsyncSession, profile: DotaProfileModel) -> None:
     """The newest ranked matches, then (until done) one page of history."""
     now = utcnow()
@@ -190,8 +237,9 @@ async def check(db: AsyncSession, profile: DotaProfileModel) -> None:
         profile.backfill_skip += len(page)
         profile.backfill_done = len(page) < stratz.PAGE
         logger.info(f"[dota] history for {profile.account_id}: {profile.backfill_skip} read{' (done)' if profile.backfill_done else ''}")
+    more_others = await fill_others(db, profile)
     profile.last_error = None
-    profile.next_check_at = now + (CHECK if profile.backfill_done else BACKFILL_CHECK)
+    profile.next_check_at = now + (CHECK if profile.backfill_done and not more_others else BACKFILL_CHECK)
 
 
 async def pending(db: AsyncSession, limit: int = 20) -> list[dict]:

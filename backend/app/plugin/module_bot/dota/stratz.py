@@ -131,6 +131,57 @@ def _side(player: dict, match: dict) -> dict:
     }
 
 
+# Several matches in one request (STRATZ's own multi-match query is for its admins): aliases.
+MATCHES_PER_REQUEST = 10
+OTHER_FIELDS = (
+    "id topLaneOutcome midLaneOutcome bottomLaneOutcome players { steamAccountId isRadiant isVictory heroId"
+    " position lane goldPerMinute experiencePerMinute numLastHits imp"
+    " stats { networthPerMinute lastHitsPerMinute itemPurchases { time itemId } } }"
+)
+
+
+async def matches_with_everyone(db: AsyncSession, match_ids: list[int]) -> dict[int, dict]:
+    """Up to MATCHES_PER_REQUEST matches with all ten players, by match id (missing: STRATZ has none)."""
+    query = " ".join(f"m{i}: match(id: {int(m)}) {{ {OTHER_FIELDS} }}" for i, m in enumerate(match_ids[:MATCHES_PER_REQUEST]))
+    data = await _query(db, f"{{ {query} }}")
+    return {int(m["id"]): m for m in data.values() if m and m.get("id")}
+
+
+def others_of(account_id: int, match: dict) -> list[dict]:
+    """Everyone in the match but the player, in the details' shape (no lead: it's the player's lead,
+    flipped for the other side): account id (None when anonymous), hero, won, side, position, lane
+    and its outcome, GPM, XPM, last hits, IMP, net worth and last hits per minute, item timings."""
+    out = []
+    for p in match.get("players") or []:
+        if p.get("steamAccountId") == account_id:
+            continue
+        stats = p.get("stats") or {}
+        position = str(p.get("position") or "")
+        first: dict[int, int] = {}
+        for purchase in stats.get("itemPurchases") or []:
+            item, time = purchase.get("itemId"), purchase.get("time")
+            if item is not None and time is not None and item not in first:
+                first[int(item)] = int(time)
+        out.append(
+            {
+                "acc": p.get("steamAccountId"),
+                "hero": int(p.get("heroId") or 0),
+                "won": bool(p.get("isVictory")),
+                "rad": bool(p.get("isRadiant")),
+                "pos": int(position[-1]) if position.startswith("POSITION_") and position[-1].isdigit() else None,
+                "laneOut": lane_outcome(match, p),
+                "gpm": int(p.get("goldPerMinute") or 0),
+                "xpm": int(p.get("experiencePerMinute") or 0),
+                "lh": int(p.get("numLastHits") or 0),
+                "imp": int(p["imp"]) if isinstance(p.get("imp"), int) else None,
+                "nwm": [int(v or 0) for v in stats.get("networthPerMinute") or []],
+                "lhm": [int(v or 0) for v in stats.get("lastHitsPerMinute") or []],
+                "items": sorted(([t, i] for i, t in first.items()), key=lambda x: x[0]),
+            }
+        )
+    return out
+
+
 def to_row(account_id: int, match: dict) -> dict | None:
     """A match as bot_dota_match columns, or None without this player's line. Deaths keep STRATZ's
     map cells (x, y about 64–192; y grows to the north), seconds, killer hero, gold lost, seconds dead,

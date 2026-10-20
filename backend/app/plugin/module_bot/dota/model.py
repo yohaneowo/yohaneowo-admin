@@ -57,6 +57,8 @@ class DotaMatchModel(MappedBase):
     death_events: Mapped[list] = mapped_column(JSON, default=list)
     # Economy and IMP for the DotaHub pages (stratz.details); None until read with them.
     details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The other nine players (stratz.others_of), for comparing against the same bracket; None until read.
+    others: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # none (history, or no DM wanted), pending (for the bot), sent.
     notify_state: Mapped[str] = mapped_column(String(16), default="none")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)

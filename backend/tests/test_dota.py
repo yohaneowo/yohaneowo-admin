@@ -82,6 +82,34 @@ def test_a_parsed_match_keeps_its_economy_and_imp():
     assert d["bench"] == {"10": [4100, 50.2], "20": [9900, 120.0]}
 
 
+def test_the_other_players_are_kept_without_the_player():
+    match = {
+        "id": 9,
+        "topLaneOutcome": "DIRE_VICTORY",
+        "players": [
+            {"steamAccountId": 1, "isRadiant": True, "heroId": 4},
+            {
+                "steamAccountId": 77,
+                "isRadiant": False,
+                "isVictory": True,
+                "heroId": 31,
+                "position": "POSITION_5",
+                "lane": "SAFE_LANE",
+                "goldPerMinute": 350,
+                "imp": -4,
+                "stats": {"networthPerMinute": [600, 800], "lastHitsPerMinute": [0, 2], "itemPurchases": [{"time": 60, "itemId": 1}, {"time": 90, "itemId": 1}]},
+            },
+            {"steamAccountId": None, "isRadiant": False, "heroId": 8},
+        ],
+    }
+    others = stratz.others_of(1, match)
+    assert [o["hero"] for o in others] == [31, 8]
+    first = others[0]
+    assert (first["acc"], first["won"], first["rad"], first["pos"], first["laneOut"], first["gpm"], first["imp"]) == (77, True, False, 5, 1, 350, -4)
+    assert first["nwm"] == [600, 800] and first["items"] == [[60, 1]]
+    assert others[1]["acc"] is None and others[1]["nwm"] == []
+
+
 def test_lane_outcome_follows_the_side():
     match = {"topLaneOutcome": "DIRE_VICTORY", "bottomLaneOutcome": "RADIANT_STOMP"}
     assert stratz.lane_outcome(match, {"isRadiant": True, "lane": "SAFE_LANE"}) == 2
@@ -141,6 +169,11 @@ def test_a_check_queues_new_matches_and_stores_history(monkeypatch):
         return True
 
     monkeypatch.setattr(stratz, "retry_parse", retry_parse)
+
+    async def matches_with_everyone(db, match_ids):
+        return {}
+
+    monkeypatch.setattr(stratz, "matches_with_everyone", matches_with_everyone)
     service._reparsed.clear()
 
     async def run():
