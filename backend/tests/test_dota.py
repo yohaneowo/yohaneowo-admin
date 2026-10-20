@@ -15,6 +15,12 @@ def _match(match_id, start, *, parsed=True, deaths=2):
     return {
         "id": match_id,
         "firstBloodTime": 100,
+        "radiantNetworthLeads": [0, -500, 1500],
+        "winRates": [0.5, 0.4, 0.75],
+        "topLaneOutcome": "DIRE_VICTORY",
+        "midLaneOutcome": "RADIANT_STOMP",
+        "bottomLaneOutcome": "TIE",
+        "analysisOutcome": "COMEBACK",
         "startDateTime": int(start.replace(tzinfo=UTC).timestamp()),
         "durationSeconds": 2400,
         "parsedDateTime": int(start.replace(tzinfo=UTC).timestamp()) + 600 if parsed else None,
@@ -27,6 +33,8 @@ def _match(match_id, start, *, parsed=True, deaths=2):
                 "assists": 7,
                 "imp": 12,
                 "position": "POSITION_2",
+                "isRadiant": True,
+                "heroAverage": [{"time": 10, "networth": 4100.4, "cs": 50.24}, {"time": 20, "networth": 9900.0, "cs": 120.0}],
                 "lane": "MID_LANE",
                 "award": "MVP",
                 "goldPerMinute": 600,
@@ -68,6 +76,18 @@ def test_a_parsed_match_keeps_its_economy_and_imp():
     # Only each item's first purchase, in time order.
     assert d["items"] == [[-60, 44], [900, 116]]
     assert stratz.to_row(1, _match(10, datetime(2026, 10, 19, 10, 0), parsed=False))["details"] is None
+    # From the player's (Radiant's) side: lead, win chance, mid lane stomped, the hero's averages.
+    assert d["rad"] and d["lead"] == [0, -500, 1500] and d["wp"] == [50, 40, 75]
+    assert (d["laneOut"], d["outcome"]) == (2, "COMEBACK")
+    assert d["bench"] == {"10": [4100, 50.2], "20": [9900, 120.0]}
+
+
+def test_lane_outcome_follows_the_side():
+    match = {"topLaneOutcome": "DIRE_VICTORY", "bottomLaneOutcome": "RADIANT_STOMP"}
+    assert stratz.lane_outcome(match, {"isRadiant": True, "lane": "SAFE_LANE"}) == 2
+    assert stratz.lane_outcome(match, {"isRadiant": False, "lane": "SAFE_LANE"}) == 1
+    assert stratz.lane_outcome(match, {"isRadiant": False, "lane": "OFF_LANE"}) == -2
+    assert stratz.lane_outcome(match, {"isRadiant": True, "lane": "JUNGLE"}) is None
 
 
 def test_the_first_blood_death_is_marked():

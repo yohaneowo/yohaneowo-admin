@@ -30,7 +30,13 @@ PLAYER_FIELDS = (
     "heroId isVictory kills deaths assists imp position lane award goldPerMinute experiencePerMinute networth"
     " numLastHits numDenies heroDamage stats { deathEvents { time positionX positionY attacker goldLost timeDead }"
     " networthPerMinute impPerMinute lastHitsPerMinute itemPurchases { time itemId } }"
+    " isRadiant heroAverage { time networth cs }"
 )
+MATCH_FIELDS = "radiantNetworthLeads winRates topLaneOutcome midLaneOutcome bottomLaneOutcome analysisOutcome"
+# The hero's average (same hero and position, from STRATZ) is kept at these minutes.
+BENCH_MINUTES = (10, 20, 30)
+# A lane outcome from Radiant's side; flipped for Dire.
+LANE_SCORE = {"RADIANT_STOMP": 2, "RADIANT_VICTORY": 1, "TIE": 0, "DIRE_VICTORY": -1, "DIRE_STOMP": -2}
 
 
 async def _query(db: AsyncSession, query: str) -> dict:
@@ -57,7 +63,7 @@ async def ranked_matches(db: AsyncSession, account_id: int, take: int, skip: int
     data = await _query(
         db,
         f"{{ player(steamAccountId: {int(account_id)}) {{ matches(request: {{ take: {int(take)}, skip: {int(skip)}, lobbyTypeIds: [{RANKED}] }}) {{"
-        f" id startDateTime durationSeconds parsedDateTime firstBloodTime players(steamAccountId: {int(account_id)}) {{ {PLAYER_FIELDS} }} }} }} }}",
+        f" id startDateTime durationSeconds parsedDateTime firstBloodTime {MATCH_FIELDS} players(steamAccountId: {int(account_id)}) {{ {PLAYER_FIELDS} }} }} }} }}",
     )
     return ((data.get("player") or {}).get("matches")) or []
 
@@ -68,10 +74,22 @@ async def retry_parse(db: AsyncSession, match_id: int) -> bool:
     return bool(data.get("retryMatchDownload"))
 
 
-def details(player: dict) -> dict | None:
+def lane_outcome(match: dict, player: dict) -> int | None:
+    """How the player's own lane went, -2 (stomped) to 2 (stomped them); None off the side lanes and mid."""
+    radiant = bool(player.get("isRadiant"))
+    lane = {"MID_LANE": "mid", "SAFE_LANE": "bottom" if radiant else "top", "OFF_LANE": "top" if radiant else "bottom"}.get(str(player.get("lane")))
+    score = LANE_SCORE.get(str(match.get(f"{lane}LaneOutcome"))) if lane else None
+    return None if score is None else score if radiant else -score
+
+
+def details(player: dict, match: dict | None = None) -> dict | None:
     """The economy and IMP of one parsed match: position (1–5), lane, STRATZ's award, GPM, XPM, final
     net worth, last hits, denies, hero damage; per minute the net worth (running total), IMP (at that
-    minute) and last hits (that minute's); each item's first purchase as [seconds, item id]."""
+    minute) and last hits (that minute's); each item's first purchase as [seconds, item id]. From the
+    player's side: the team's net worth lead and win chance (0–100) per minute, the lane outcome, and
+    STRATZ's read of the match (STOMPED, COMEBACK…). bench: the hero's average net worth and last hits
+    at BENCH_MINUTES."""
+    match = match or {}
     stats = player.get("stats") or {}
     if not stats.get("networthPerMinute"):
         return None
@@ -95,6 +113,21 @@ def details(player: dict) -> dict | None:
         "impm": [int(v or 0) for v in stats.get("impPerMinute") or []],
         "lhm": [int(v or 0) for v in stats.get("lastHitsPerMinute") or []],
         "items": sorted(([t, i] for i, t in first.items()), key=lambda p: p[0]),
+        **_side(player, match),
+    }
+
+
+def _side(player: dict, match: dict) -> dict:
+    sign = 1 if player.get("isRadiant") else -1
+    averages = {a.get("time"): a for a in player.get("heroAverage") or []}
+    bench = {str(m): [round(averages[m].get("networth") or 0), round(averages[m].get("cs") or 0, 1)] for m in BENCH_MINUTES if m in averages}
+    return {
+        "rad": bool(player.get("isRadiant")),
+        "lead": [sign * int(v or 0) for v in match.get("radiantNetworthLeads") or []],
+        "wp": [round(100 * (v if sign > 0 else 1 - v)) for v in match.get("winRates") or [] if v is not None],
+        "laneOut": lane_outcome(match, player),
+        "outcome": match.get("analysisOutcome") if match.get("analysisOutcome") not in (None, "NONE") else None,
+        "bench": bench or None,
     }
 
 
@@ -120,7 +153,7 @@ def to_row(account_id: int, match: dict) -> dict | None:
         "assists": int(player.get("assists") or 0),
         "imp": int(player["imp"]) if isinstance(player.get("imp"), int) else None,
         "parsed": bool(match.get("parsedDateTime")),
-        "details": details(player) if match.get("parsedDateTime") else None,
+        "details": details(player, match) if match.get("parsedDateTime") else None,
         "death_events": [
             {
                 "t": int(e.get("time") or 0),
