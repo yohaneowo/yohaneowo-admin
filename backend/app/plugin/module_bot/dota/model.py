@@ -62,3 +62,39 @@ class DotaMatchModel(MappedBase):
     # none (history, or no DM wanted), pending (for the bot), sent.
     notify_state: Mapped[str] = mapped_column(String(16), default="none")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class DotaSampleWantModel(MappedBase):
+    """A hero at a rank tier (medal 1–8, Herald to Immortal) the website compares players against:
+    while it's wanted, the background check collects its ranked matches (DotaSampleModel)."""
+
+    __tablename__ = "bot_dota_sample_want"
+
+    hero_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tier: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # The website asked for it (collecting stops when nobody has for a while).
+    requested_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    next_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Where OpenDota's public matches were read down to (match ids go down); None: from the newest.
+    cursor: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Players of the tier still to read, and those read already (account ids).
+    queue: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    seen: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # When the sample was last full (it's refreshed with newer matches after a few days).
+    filled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class DotaSampleModel(MappedBase):
+    """One ranked match of a hero at a rank tier: that hero's player in the details' shape (plus won
+    and account id), or None when STRATZ had no parsed data (kept so it isn't asked for again)."""
+
+    __tablename__ = "bot_dota_sample"
+    __table_args__ = (Index("ix_bot_dota_sample_start", "hero_id", "tier", "start_time"),)
+
+    hero_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tier: Mapped[int] = mapped_column(Integer, primary_key=True)
+    match_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    start_time: Mapped[datetime] = mapped_column(DateTime)
+    duration: Mapped[int] = mapped_column(Integer, default=0)
+    data: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)

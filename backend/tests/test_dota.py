@@ -7,8 +7,8 @@ from types import SimpleNamespace
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.plugin.module_bot.dota import service, stratz
-from app.plugin.module_bot.dota.model import DotaMatchModel, DotaProfileModel
+from app.plugin.module_bot.dota import opendota, samples, service, stratz
+from app.plugin.module_bot.dota.model import DotaMatchModel, DotaProfileModel, DotaSampleModel, DotaSampleWantModel
 
 
 def _match(match_id, start, *, parsed=True, deaths=2):
@@ -201,3 +201,69 @@ def test_a_check_queues_new_matches_and_stores_history(monkeypatch):
     assert [p["matchId"] for p in pending] == [30]
     assert profile.backfill_done and profile.backfill_skip == 3
     assert profile.next_check_at == now + service.CHECK
+
+
+def test_a_rank_sample_keeps_the_heros_player():
+    base = _match(9, datetime(2026, 10, 19, 10, 0))
+    match = {**base, "players": [{**base["players"][0], "steamAccountId": 55}]}
+    sample = stratz.sample_of(4, match)
+    assert (sample["acc"], sample["won"], sample["imp"], sample["pos"], sample["gpm"]) == (55, True, 12, 2, 600)
+    assert sample["lead"] == [0, -500, 1500] and sample["laneOut"] == 2
+    # Another hero, or not parsed: nothing.
+    assert stratz.sample_of(31, match) is None
+    assert stratz.sample_of(4, {**match, "parsedDateTime": None}) is None
+
+
+def test_a_rank_sample_is_collected_from_the_tiers_players(monkeypatch):
+    now = datetime(2026, 10, 19, 12, 0)
+    monkeypatch.setattr(samples, "utcnow", lambda: now)
+    pages = []
+
+    async def public_matches(db, tier, less_than=None):
+        pages.append((tier, less_than))
+        return [{"match_id": 1_000_000}, {"match_id": 999_000}] if less_than is None else [{"match_id": 900_000}, {"match_id": 899_000}]
+
+    async def match_accounts(db, match_ids):
+        return [
+            {"id": 11, "seasonRank": 53, "isAnonymous": False},
+            {"id": 12, "seasonRank": 61, "isAnonymous": False},  # another tier
+            {"id": 13, "seasonRank": 55, "isAnonymous": True},  # anonymous
+            {"id": 14, "seasonRank": 50, "isAnonymous": False},
+            {"id": 11, "seasonRank": 53, "isAnonymous": False},  # twice
+        ]
+
+    asked = []
+
+    async def hero_matches(db, account_ids, hero_id, since):
+        asked.append((account_ids, hero_id, since))
+        good = _match(501, now - timedelta(days=2))
+        good["players"][0]["steamAccountId"] = 11
+        other_hero = {**_match(502, now - timedelta(days=3)), "players": [{**good["players"][0], "heroId": 9}]}
+        return [good, other_hero, good]
+
+    monkeypatch.setattr(opendota, "public_matches", public_matches)
+    monkeypatch.setattr(stratz, "match_accounts", match_accounts)
+    monkeypatch.setattr(stratz, "hero_matches", hero_matches)
+
+    async def run():
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            for model in (DotaSampleWantModel, DotaSampleModel):
+                await conn.run_sync(model.__table__.create)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as db, db.begin():
+            want = await samples.want(db, 4, 5)
+            await samples.fill(db, want)
+            out = [samples.sample_out(r) for r in await samples.stored(db, 4, 5, 10)]
+        await engine.dispose()
+        return want, out
+
+    want, out = asyncio.run(run())
+    # The newest page sets where to start (SETTLE back), the next page is read from there.
+    assert pages[0] == (5, None) and pages[1] == (5, 1_000_000 - int(samples.SETTLE.total_seconds() * samples.ID_RATE))
+    assert want.cursor == 899_000
+    # Only the tier's named players, once each; the hero's matches only, once each.
+    assert asked[0][0] == [11, 14] and asked[0][1] == 4 and asked[0][2] == now - samples.WINDOW
+    assert want.queue == [] and want.seen == [11, 14]
+    assert [o["matchId"] for o in out] == [501] and out[0]["acc"] == 11 and out[0]["details"]["gpm"] == 600
+    assert want.next_check_at == now + samples.CHECK and want.filled_at is None

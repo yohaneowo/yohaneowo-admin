@@ -27,6 +27,7 @@ PROVIDERS: dict[str, dict] = {
     "bangumi": {"label": "Bangumi", "env": None, "daily_limit": None, "note": "不需要 key，请求间隔 0.5 秒"},
     "mal": {"label": "MyAnimeList", "env": "MAL_CLIENT_ID", "daily_limit": None, "note": "有 MAL_CLIENT_ID 用官方 API，没有就走 Jikan"},
     "stratz": {"label": "STRATZ", "env": "STRATZ_API_TOKEN", "daily_limit": None, "note": "DotaHub 的死亡地图：每 5 分钟查一次已连结帐号的天梯比赛，补历史时一页 100 场"},
+    "opendota": {"label": "OpenDota", "env": None, "daily_limit": 800, "note": "不需要 key；DotaHub 段位样本按牌位找公开比赛。免费额度每天约 2000 次，跟网站共用同一个 IP"},
 }
 WARN_SHARE = 0.9
 

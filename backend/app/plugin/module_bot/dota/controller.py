@@ -1,6 +1,7 @@
+from datetime import UTC
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,7 +11,7 @@ from app.core.dependencies import db_getter
 from ..internal_auth import verify_bot_token
 from ..movie.auth import verify_site_token
 from ..movie.schema import DiscordId, SiteUserId
-from . import job, service
+from . import job, samples, service
 from .model import DotaProfileModel
 
 Db = Annotated[AsyncSession, Depends(db_getter)]
@@ -107,6 +108,27 @@ async def get_bracket(site_user_id: SiteUserId, db: Db, limit: Annotated[int, Qu
         raise HTTPException(404, "notLinked")
     matches = await service.recent_bracket(db, row.account_id, limit or None)
     return SuccessResponse(data={"matches": [service.bracket_out(m) for m in matches]})
+
+
+@DotaWebsiteRouter.get("/samples/{hero_id}/{tier}")
+async def get_sample(
+    hero_id: Annotated[int, Path(ge=1, le=1000)],
+    tier: Annotated[int, Path(ge=1, le=8)],
+    db: Db,
+    limit: Annotated[int, Query(ge=1, le=samples.KEEP)] = samples.TARGET,
+):
+    """A hero's ranked matches at a rank tier (medal 1–8). Asking keeps it collected in the
+    background; while it's short of the target, what's there so far."""
+    row = await samples.want(db, hero_id, tier)
+    rows = await samples.stored(db, hero_id, tier, limit)
+    return SuccessResponse(
+        data={
+            "count": await samples.usable_count(db, hero_id, tier),
+            "target": samples.TARGET,
+            "filledAt": int(row.filled_at.replace(tzinfo=UTC).timestamp()) if row.filled_at else None,
+            "matches": [samples.sample_out(r) for r in rows],
+        }
+    )
 
 
 @DotaInternalRouter.get("/notifications")

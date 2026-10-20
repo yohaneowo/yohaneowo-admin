@@ -54,7 +54,8 @@ async def _query(db: AsyncSession, query: str) -> dict:
     )
     body = json_or_none(response) or {}
     if response.status_code != 200 or body.get("errors"):
-        raise SourceUnavailable(f"STRATZ 回应错误（HTTP {response.status_code}）")
+        message = ((body.get("errors") or [{}])[0].get("message") or "")[:200]
+        raise SourceUnavailable(f"STRATZ 回应错误（HTTP {response.status_code}）{message}")
     return body.get("data") or {}
 
 
@@ -180,6 +181,50 @@ def others_of(account_id: int, match: dict) -> list[dict]:
             }
         )
     return out
+
+
+async def match_accounts(db: AsyncSession, match_ids: list[int]) -> list[dict]:
+    """Everyone in up to MATCHES_PER_REQUEST matches: {id, seasonRank (medal × 10 + stars), isAnonymous}."""
+    query = " ".join(f"m{i}: match(id: {int(m)}) {{ players {{ steamAccount {{ id seasonRank isAnonymous }} }} }}" for i, m in enumerate(match_ids[:MATCHES_PER_REQUEST]))
+    data = await _query(db, f"{{ {query} }}")
+    return [p["steamAccount"] for m in data.values() if m for p in m.get("players") or [] if p.get("steamAccount")]
+
+
+# The rank samples: a player's line with everything details() reads but the deaths and the hero's
+# average.
+SAMPLE_PLAYER_FIELDS = (
+    "steamAccountId heroId isVictory isRadiant position lane award goldPerMinute experiencePerMinute networth"
+    " numLastHits numDenies heroDamage imp stats { networthPerMinute impPerMinute lastHitsPerMinute itemPurchases { time itemId } }"
+)
+# Ten players with ten matches each is about 240k of STRATZ's 310k query complexity.
+PLAYERS_PER_REQUEST = 10
+HERO_GAMES = 10
+
+
+async def hero_matches(db: AsyncSession, account_ids: list[int], hero_id: int, since: datetime) -> list[dict]:
+    """Up to PLAYERS_PER_REQUEST players' newest parsed ranked matches on the hero since then
+    (HERO_GAMES each), each with only that player's line."""
+    after = int(since.replace(tzinfo=UTC).timestamp())
+    query = " ".join(
+        f"p{i}: player(steamAccountId: {int(a)}) {{ matches(request: {{ heroIds: [{int(hero_id)}], lobbyTypeIds: [{RANKED}], isParsed: true,"
+        f" startDateTime: {after}, take: {HERO_GAMES} }}) {{ id startDateTime durationSeconds parsedDateTime {MATCH_FIELDS}"
+        f" players(steamAccountId: {int(a)}) {{ {SAMPLE_PLAYER_FIELDS} }} }} }}"
+        for i, a in enumerate(account_ids[:PLAYERS_PER_REQUEST])
+    )
+    data = await _query(db, f"{{ {query} }}")
+    return [m for p in data.values() if p for m in p.get("matches") or [] if m and m.get("id")]
+
+
+def sample_of(hero_id: int, match: dict) -> dict | None:
+    """The hero's player in the match as a sample: account id (None when anonymous), won, IMP and the
+    details; None when the hero isn't in it or STRATZ hasn't parsed it."""
+    if not match.get("parsedDateTime"):
+        return None
+    player = next((p for p in match.get("players") or [] if p.get("heroId") == hero_id), None)
+    data = details(player, match) if player else None
+    if data is None:
+        return None
+    return {"acc": player.get("steamAccountId"), "won": bool(player.get("isVictory")), "imp": player["imp"] if isinstance(player.get("imp"), int) else None, **data}
 
 
 def to_row(account_id: int, match: dict) -> dict | None:
