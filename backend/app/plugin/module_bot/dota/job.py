@@ -10,7 +10,7 @@ from app.core.database import async_db_session
 from app.core.logger import logger
 
 from ..movie.sources.base import SourceUnavailable
-from . import samples, service
+from . import guests, samples, service
 from .model import DotaProfileModel, DotaSampleWantModel
 
 TICK = 30
@@ -41,6 +41,12 @@ async def run_once() -> int:
                 profile.next_check_at = now + service.RETRY
                 logger.warning(f"[dota] check failed for {profile.account_id}: {error}")
     await fill_samples(now)
+    # Guests last: their history waits for the linked accounts and the rank samples.
+    async with async_db_session() as db, db.begin():
+        try:
+            await guests.tick(db, now)
+        except Exception as error:  # noqa: BLE001 - the loop must go on
+            logger.warning(f"[dota] guest step failed: {error}")
     return len(due)
 
 

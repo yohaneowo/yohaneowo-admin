@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.logger import logger
 
 from . import stratz
-from .model import DotaMatchModel, DotaProfileModel
+from .model import DotaGuestModel, DotaMatchModel, DotaProfileModel
 
 # A linked account is checked every CHECK minutes, more often while its history is filled in.
 CHECK = timedelta(minutes=5)
@@ -59,6 +59,10 @@ async def link(db: AsyncSession, site_user_id: str, steam_id: str, account_id: i
         db.add(row)
     if discord_id:
         row.discord_id = discord_id
+    # Read as a guest before: the link takes over (its matches stay, the guest row goes).
+    guest = await db.get(DotaGuestModel, account_id)
+    if guest is not None:
+        await db.delete(guest)
     row.next_check_at = utcnow()
     await db.flush()
     return row

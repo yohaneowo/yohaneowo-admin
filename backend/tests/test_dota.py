@@ -7,8 +7,8 @@ from types import SimpleNamespace
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.plugin.module_bot.dota import opendota, samples, service, stratz
-from app.plugin.module_bot.dota.model import DotaMatchModel, DotaProfileModel, DotaSampleModel, DotaSampleWantModel
+from app.plugin.module_bot.dota import guests, opendota, samples, service, stratz
+from app.plugin.module_bot.dota.model import DotaGuestModel, DotaMatchModel, DotaProfileModel, DotaSampleModel, DotaSampleWantModel
 
 
 def _match(match_id, start, *, parsed=True, deaths=2):
@@ -179,7 +179,7 @@ def test_a_check_queues_new_matches_and_stores_history(monkeypatch):
     async def run():
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         async with engine.begin() as conn:
-            for model in (DotaProfileModel, DotaMatchModel):
+            for model in (DotaProfileModel, DotaMatchModel, DotaGuestModel):
                 await conn.run_sync(model.__table__.create)
         factory = async_sessionmaker(engine, expire_on_commit=False)
         async with factory() as db, db.begin():
@@ -270,3 +270,85 @@ def test_a_rank_sample_is_collected_from_the_tiers_players(monkeypatch):
     assert want.queue == [] and want.seen == [11, 14]
     assert [o["matchId"] for o in out] == [501] and out[0]["acc"] == 11 and out[0]["details"]["gpm"] == 600
     assert want.next_check_at == now + samples.CHECK and want.filled_at is None
+
+
+def test_guests_are_read_one_at_a_time_within_the_budget(monkeypatch):
+    now = datetime(2026, 10, 21, 12, 0)
+    history = {7: [_match(700 + i, now - timedelta(days=i + 1)) for i in range(150)], 8: [_match(800, now - timedelta(days=1))]}
+    asked = []
+
+    async def ranked_matches(db, account_id, take, skip=0):
+        asked.append((account_id, take, skip))
+        return history[account_id][skip : skip + take]
+
+    monkeypatch.setattr(stratz, "ranked_matches", ranked_matches)
+    monkeypatch.setattr(stratz, "PAGE", 100)
+    guests._budget = (now.date(), guests.DAILY_PAGES - 2)
+
+    async def run():
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            for model in (DotaProfileModel, DotaMatchModel, DotaGuestModel):
+                await conn.run_sync(model.__table__.create)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as db, db.begin():
+            first = await guests.request(db, 7, "site-a", now)
+            second = await guests.request(db, 8, "site-a", now + timedelta(seconds=1))
+            # A user may have PER_USER waiting; a linked account isn't a guest.
+            for i in range(guests.PER_USER - 2):
+                await guests.request(db, 100 + i, "site-a", now + timedelta(seconds=2 + i))
+            too_many = await guests.request(db, 99, "site-a", now)
+            db.add(DotaProfileModel(site_user_id="site-b", steam_id="76561198000000001", account_id=55, linked_at=now, backfill_skip=0, backfill_done=False, notify=False))
+            await db.flush()
+            linked = await guests.request(db, 55, "site-c", now)
+            # First tick: a page of the first guest only; a minute later its last page; then the
+            # day's budget is gone.
+            await guests.tick(db, now)
+            after_one = (first.backfill_skip, first.backfill_done, (await guests.status(db, second))["ahead"])
+            await guests.tick(db, now + timedelta(seconds=30))
+            too_soon = first.backfill_skip
+            await guests.tick(db, now + guests.PAGE_EVERY)
+            await guests.tick(db, now + guests.PAGE_EVERY * 2)
+            stored = await service.stored_count(db, 7)
+            second_status = await guests.status(db, second)
+            # Unseen for a month: dropped with its matches.
+            first.viewed_at = now - guests.KEEP - timedelta(days=1)
+            await guests.tick(db, now + timedelta(days=1))
+            gone = await db.get(DotaGuestModel, 7)
+            left = await service.stored_count(db, 7)
+        await engine.dispose()
+        return first, too_many, linked, after_one, too_soon, stored, second_status, gone, left
+
+    first, too_many, linked, after_one, too_soon, stored, second_status, gone, left = asyncio.run(run())
+    assert too_many == "tooMany" and linked == "linked"
+    assert after_one == (100, False, 1)
+    assert too_soon == 100
+    assert first.backfill_done and first.backfill_skip == 150 and stored == 150
+    # The budget ran out before the second guest's turn.
+    assert second_status["state"] == "queued" and second_status["ahead"] == 0
+    # The next day's budget lets the second guest's page through.
+    assert [a[0] for a in asked] == [7, 7, 8]
+    assert gone is None and left == 0
+
+
+def test_linking_takes_over_a_guest():
+    now = datetime(2026, 10, 21, 12, 0)
+
+    async def run():
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            for model in (DotaProfileModel, DotaMatchModel, DotaGuestModel):
+                await conn.run_sync(model.__table__.create)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as db, db.begin():
+            await guests.request(db, 344137792, "site-a", now)
+            db.add(DotaMatchModel(**stratz.to_row(344137792, _match(1, now - timedelta(days=1))), notify_state="none", created_at=now))
+            await db.flush()
+            await service.link(db, "site-b", "76561198304403520", 344137792, None)
+            guest = await db.get(DotaGuestModel, 344137792)
+            kept = await service.stored_count(db, 344137792)
+        await engine.dispose()
+        return guest, kept
+
+    guest, kept = asyncio.run(run())
+    assert guest is None and kept == 1

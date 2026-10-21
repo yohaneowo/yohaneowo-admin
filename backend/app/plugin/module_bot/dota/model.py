@@ -33,6 +33,28 @@ class DotaProfileModel(MappedBase):
     last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
+class DotaGuestModel(MappedBase):
+    """An account nobody linked whose whole ranked history a signed-in website user asked for (the
+    「全部」 of the economy, IMP and death-map pages): read in the background one at a time, a page a
+    minute within a daily budget, into the same matches as linked accounts (no other nine players).
+    Dropped with its matches after a month unseen."""
+
+    __tablename__ = "bot_dota_guest"
+
+    account_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # The website account that asked (each may have a few waiting at once).
+    requested_by: Mapped[str] = mapped_column(String(64), index=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    backfill_skip: Mapped[int] = mapped_column(Integer, default=0)
+    backfill_done: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Last shown on the website, and when its newest matches were last read once the history is in.
+    viewed_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    refreshed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
 class DotaMatchModel(MappedBase):
     """One ranked match of a linked account: the result and where the player died (STRATZ's death
     events: seconds, map cell x/y, the killer hero, gold lost, seconds dead)."""

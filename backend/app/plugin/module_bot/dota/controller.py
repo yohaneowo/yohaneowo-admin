@@ -3,6 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.response import SuccessResponse
@@ -11,8 +12,8 @@ from app.core.dependencies import db_getter
 from ..internal_auth import verify_bot_token
 from ..movie.auth import verify_site_token
 from ..movie.schema import DiscordId, SiteUserId
-from . import job, samples, service
-from .model import DotaProfileModel
+from . import guests, job, samples, service
+from .model import DotaGuestModel, DotaProfileModel
 
 Db = Annotated[AsyncSession, Depends(db_getter)]
 
@@ -27,6 +28,11 @@ class LinkIn(BaseModel):
     steamId: str = Field(pattern=r"^[0-9]{17}$")
     accountId: int = Field(ge=1, le=4_294_967_295)
     discordId: DiscordId | None = None
+
+
+class GuestIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    requestedBy: SiteUserId
 
 
 class SettingsIn(BaseModel):
@@ -129,6 +135,61 @@ async def get_sample(
             "matches": [samples.sample_out(r) for r in rows],
         }
     )
+
+
+AccountId = Annotated[int, Path(ge=1, le=4_294_967_295)]
+
+
+@DotaWebsiteRouter.post("/guests/{account_id}")
+async def post_guest(account_id: AccountId, data: GuestIn, db: Db):
+    """A signed-in user confirmed reading this account's whole ranked history: queue it (again: its
+    status). 409 linked (it's a linked account), 429 tooMany (the user has PER_USER waiting)."""
+    result = await guests.request(db, account_id, data.requestedBy, service.utcnow())
+    if result == "linked":
+        raise HTTPException(409, "linked")
+    if result == "tooMany":
+        raise HTTPException(429, "tooMany")
+    return SuccessResponse(data=await guests.status(db, result))
+
+
+@DotaWebsiteRouter.get("/guests/{account_id}")
+async def get_guest(account_id: AccountId, db: Db):
+    """Where a guest's history stands (404 notQueued)."""
+    row = await db.get(DotaGuestModel, account_id)
+    if row is None:
+        raise HTTPException(404, "notQueued")
+    return SuccessResponse(data=await guests.status(db, row))
+
+
+@DotaWebsiteRouter.get("/guests")
+async def list_guests(db: Db, requestedBy: Annotated[str, Query(min_length=1, max_length=64)]):
+    """The guests a website user asked for, newest first (for its notifications)."""
+    rows = await db.scalars(select(DotaGuestModel).where(DotaGuestModel.requested_by == requestedBy).order_by(DotaGuestModel.requested_at.desc()).limit(20))
+    return SuccessResponse(data=[await guests.status(db, r) for r in rows])
+
+
+async def _guest_seen(db: AsyncSession, account_id: int) -> DotaGuestModel:
+    row = await db.get(DotaGuestModel, account_id, with_for_update=True)
+    if row is None:
+        raise HTTPException(404, "notQueued")
+    guests.seen(row, service.utcnow())
+    return row
+
+
+@DotaWebsiteRouter.get("/accounts/{account_id}/deaths")
+async def get_guest_deaths(account_id: AccountId, db: Db, limit: Annotated[int, Query(ge=0, le=100_000)] = 50):
+    """A guest's stored ranked matches with their deaths (limit 0: all), as for a linked account."""
+    row = await _guest_seen(db, account_id)
+    matches = await service.recent_deaths(db, account_id, limit or None)
+    return SuccessResponse(data={"historyDone": row.backfill_done, "matches": [service.match_out(m) for m in matches]})
+
+
+@DotaWebsiteRouter.get("/accounts/{account_id}/details")
+async def get_guest_details(account_id: AccountId, db: Db, limit: Annotated[int, Query(ge=0, le=100_000)] = 100):
+    """A guest's stored ranked matches with economy and IMP details (limit 0: all)."""
+    row = await _guest_seen(db, account_id)
+    matches = await service.recent_details(db, account_id, limit or None)
+    return SuccessResponse(data={"historyDone": row.backfill_done, "matches": [service.details_out(m) for m in matches]})
 
 
 @DotaInternalRouter.get("/notifications")
