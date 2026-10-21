@@ -46,7 +46,15 @@ async def position(db: AsyncSession, guest: DotaGuestModel) -> int:
     """How many unfinished guests were asked for before this one (0: it's being read)."""
     if guest.backfill_done:
         return 0
-    return int(await db.scalar(select(func.count()).select_from(DotaGuestModel).where(DotaGuestModel.backfill_done.is_(False), DotaGuestModel.requested_at < guest.requested_at)) or 0)
+    # Not itself: MySQL keeps whole seconds, so a fresh row can read as earlier than its own time.
+    return int(
+        await db.scalar(
+            select(func.count())
+            .select_from(DotaGuestModel)
+            .where(DotaGuestModel.backfill_done.is_(False), DotaGuestModel.account_id != guest.account_id, DotaGuestModel.requested_at < guest.requested_at)
+        )
+        or 0
+    )
 
 
 async def status(db: AsyncSession, guest: DotaGuestModel) -> dict:
@@ -74,6 +82,8 @@ async def request(db: AsyncSession, account_id: int, requested_by: str, now: dat
     waiting = await db.scalar(select(func.count()).select_from(DotaGuestModel).where(DotaGuestModel.requested_by == requested_by, DotaGuestModel.backfill_done.is_(False)))
     if (waiting or 0) >= PER_USER:
         return "tooMany"
+    # Whole seconds, as MySQL stores them.
+    now = now.replace(microsecond=0)
     guest = DotaGuestModel(account_id=account_id, requested_by=requested_by, requested_at=now, viewed_at=now, backfill_skip=0, backfill_done=False)
     db.add(guest)
     await db.flush()
