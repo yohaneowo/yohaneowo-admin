@@ -37,7 +37,7 @@ class DotaGuestModel(MappedBase):
     """An account nobody linked whose whole ranked history a signed-in website user asked for (the
     「全部」 of the economy, IMP and death-map pages): read in the background one at a time, a page a
     minute within a daily budget, into the same matches as linked accounts (no other nine players).
-    Dropped with its matches after a month unseen."""
+    Dropped with its matches after a month unseen, unless kept (a pro: too many matches to read again)."""
 
     __tablename__ = "bot_dota_guest"
 
@@ -53,6 +53,9 @@ class DotaGuestModel(MappedBase):
     refreshed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     next_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Never dropped for going unseen: the website says so for players on a pro team (their
+    # thousands of matches aren't worth reading twice).
+    keep: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class DotaMatchModel(MappedBase):

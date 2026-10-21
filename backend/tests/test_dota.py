@@ -352,3 +352,29 @@ def test_linking_takes_over_a_guest():
 
     guest, kept = asyncio.run(run())
     assert guest is None and kept == 1
+
+
+def test_a_kept_guest_is_never_dropped_unseen():
+    now = datetime(2026, 10, 21, 12, 0)
+
+    async def run():
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            for model in (DotaProfileModel, DotaMatchModel, DotaGuestModel):
+                await conn.run_sync(model.__table__.create)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as db, db.begin():
+            pro = await guests.request(db, 1, "site-a", now, keep=True)
+            other = await guests.request(db, 2, "site-a", now)
+            # Asked again for a pro later: kept from then on.
+            again = await guests.request(db, 2, "site-b", now, keep=True)
+            three = await guests.request(db, 3, "site-a", now)
+            for g in (pro, other, three):
+                g.backfill_done, g.viewed_at = True, now - guests.KEEP - timedelta(days=1)
+            await guests._drop_unseen(db, now)
+            left = {g.account_id for g in await db.scalars(select(DotaGuestModel))}
+        await engine.dispose()
+        return again, left
+
+    again, left = asyncio.run(run())
+    assert again.keep and left == {1, 2}

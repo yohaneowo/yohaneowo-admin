@@ -33,6 +33,8 @@ class LinkIn(BaseModel):
 class GuestIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     requestedBy: SiteUserId
+    # A pro (on a team in the website's GOAT): never dropped for going unseen.
+    keep: bool = False
 
 
 class SettingsIn(BaseModel):
@@ -144,7 +146,7 @@ AccountId = Annotated[int, Path(ge=1, le=4_294_967_295)]
 async def post_guest(account_id: AccountId, data: GuestIn, db: Db):
     """A signed-in user confirmed reading this account's whole ranked history: queue it (again: its
     status). 409 linked (it's a linked account), 429 tooMany (the user has PER_USER waiting)."""
-    result = await guests.request(db, account_id, data.requestedBy, service.utcnow())
+    result = await guests.request(db, account_id, data.requestedBy, service.utcnow(), keep=data.keep)
     if result == "linked":
         raise HTTPException(409, "linked")
     if result == "tooMany":

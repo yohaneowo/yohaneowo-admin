@@ -1,7 +1,8 @@
 """DotaHub guests: the whole ranked history of an account nobody linked, read because a signed-in
 website user asked (and confirmed) — so the economy, IMP and death-map pages can show 「全部」 for
 anyone. One guest at a time, a STRATZ page (100 matches) a minute, within a daily budget, after the
-linked accounts; the matches go where linked accounts' do. A guest unseen for a month is dropped."""
+linked accounts; the matches go where linked accounts' do. A guest unseen for a month is dropped,
+unless the website asked to keep it (a pro's thousands of matches)."""
 
 from datetime import UTC, date, datetime, timedelta
 
@@ -70,21 +71,22 @@ async def status(db: AsyncSession, guest: DotaGuestModel) -> dict:
     }
 
 
-async def request(db: AsyncSession, account_id: int, requested_by: str, now: datetime) -> DotaGuestModel | str:
+async def request(db: AsyncSession, account_id: int, requested_by: str, now: datetime, keep: bool = False) -> DotaGuestModel | str:
     """Queues an account; "linked" when it's a linked account already (its history is being read
-    anyway), "tooMany" when the website account has PER_USER waiting."""
+    anyway), "tooMany" when the website account has PER_USER waiting. keep: never drop it unseen."""
     if await db.scalar(select(DotaProfileModel.site_user_id).where(DotaProfileModel.account_id == account_id)) is not None:
         return "linked"
     guest = await db.get(DotaGuestModel, account_id, with_for_update=True)
     if guest is not None:
         guest.viewed_at = now
+        guest.keep = guest.keep or keep
         return guest
     waiting = await db.scalar(select(func.count()).select_from(DotaGuestModel).where(DotaGuestModel.requested_by == requested_by, DotaGuestModel.backfill_done.is_(False)))
     if (waiting or 0) >= PER_USER:
         return "tooMany"
     # Whole seconds, as MySQL stores them.
     now = now.replace(microsecond=0)
-    guest = DotaGuestModel(account_id=account_id, requested_by=requested_by, requested_at=now, viewed_at=now, backfill_skip=0, backfill_done=False)
+    guest = DotaGuestModel(account_id=account_id, requested_by=requested_by, requested_at=now, viewed_at=now, backfill_skip=0, backfill_done=False, keep=keep)
     db.add(guest)
     await db.flush()
     return guest
@@ -98,7 +100,7 @@ def seen(guest: DotaGuestModel, now: datetime) -> None:
 
 
 async def _drop_unseen(db: AsyncSession, now: datetime) -> None:
-    for guest in await db.scalars(select(DotaGuestModel).where(DotaGuestModel.viewed_at < now - KEEP).limit(5)):
+    for guest in await db.scalars(select(DotaGuestModel).where(DotaGuestModel.viewed_at < now - KEEP, DotaGuestModel.keep.is_(False)).limit(5)):
         # A guest that has since linked keeps its matches (they're the linked account's now).
         if await db.scalar(select(DotaProfileModel.site_user_id).where(DotaProfileModel.account_id == guest.account_id)) is None:
             await db.execute(delete(DotaMatchModel).where(DotaMatchModel.account_id == guest.account_id))
