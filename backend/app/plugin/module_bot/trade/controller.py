@@ -19,8 +19,10 @@ from . import job, service
 from .binance import KeyRejected
 
 Db = Annotated[AsyncSession, Depends(db_getter)]
-Symbol = Annotated[str, Field(pattern=r"^[A-Z0-9_]{3,32}$")]
-Product = Literal["spot", "coinm"]
+Symbol = Annotated[str, Field(pattern=r"^[A-Z0-9_]{1,32}$")]
+Product = Literal["spot", "coinm", "stock"]
+# Symbols followed by hand: only the products read symbol by symbol (stock fills come as one stream).
+TrackedProduct = Literal["spot", "coinm"]
 
 TradeWebsiteRouter = APIRouter(prefix="/website/trade", tags=["网站 TradeHub"], dependencies=[Depends(verify_site_token), Depends(job.ensure_loop)])
 
@@ -35,7 +37,7 @@ class ConnectIn(BaseModel):
 
 class TrackedSymbol(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    product: Product
+    product: TrackedProduct
     symbol: Symbol
 
 

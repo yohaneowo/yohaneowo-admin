@@ -13,10 +13,12 @@ from ..movie.sources.base import SourceUnavailable
 PAGE = 1000
 # Quote assets a held asset is paired with when looking for its spot market, in order.
 QUOTES = ("USDT", "USDC")
-# Held assets whose spot market has another base symbol (Binance's tokenized stocks).
-ASSET_BASES = {"EQ_MSTR": "MSTRB"}
-# Never a base to look for fills of: quotes and other stablecoins.
+# Never a base to look for spot fills of: quotes and other stablecoins.
 STABLES = {"USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI", "USDP", "USD1", "EUR"}
+# US stocks (Binance Stocks, /sapi/v1/equity) are held as "EQ_" + ticker and have their own fills.
+STOCK_PREFIX = "EQ_"
+# The stock endpoints page with `page` / `size`; a size above 100 is rejected.
+STOCK_PAGE = 100
 
 
 # ccxt logs every request and response body at DEBUG: account balances and signed URLs don't belong
@@ -117,8 +119,8 @@ class Binance:
         ids = {m["id"] for m in markets.values() if m.get("spot") and m.get("active") is not False}
         out = []
         for asset in sorted(assets):
-            base = ASSET_BASES.get(asset, asset)
-            if base in STABLES:
+            base = asset
+            if base in STABLES or base.startswith(STOCK_PREFIX):
                 continue
             out.extend(f"{base}{quote}" for quote in QUOTES if f"{base}{quote}" in ids)
         return out
@@ -136,6 +138,19 @@ class Binance:
         """A page of income records in [start_ms, end_ms], oldest first (GET /dapi/v1/income; the
         window may be at most 200 days)."""
         return await self._call(self.coinm.dapiprivate_get_income, {"startTime": start_ms, "endTime": end_ms, "limit": PAGE})
+
+    # ── Stocks ────────────────────────────────────────────────────────────────────────────────
+
+    async def stock_trades(self, start_ms: int, end_ms: int, page: int) -> tuple[list[dict], int]:
+        """A page of stock fills in [start_ms, end_ms] over all tickers (GET /sapi/v1/equity/trade/history):
+        the rows and the total count of the window."""
+        r = await self._call(self.spot.sapi_get_equity_trade_history, {"startTime": start_ms, "endTime": end_ms, "page": page, "size": STOCK_PAGE})
+        return r.get("rows", []), int(r.get("total", 0))
+
+    async def stock_orders(self, start_ms: int, end_ms: int, page: int) -> tuple[list[dict], int]:
+        """A page of stock orders in the window (GET /sapi/v1/equity/order/history): the fee is per order."""
+        r = await self._call(self.spot.sapi_get_equity_order_history, {"startTime": start_ms, "endTime": end_ms, "page": page, "size": STOCK_PAGE})
+        return r.get("rows", []), int(r.get("total", 0))
 
     async def _call(self, method, *args):
         try:

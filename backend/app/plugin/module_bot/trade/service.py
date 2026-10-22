@@ -23,7 +23,11 @@ INCOME = "*"
 # endpoint's limit).
 COINM_EPOCH_MS = 1_577_836_800_000
 INCOME_WINDOW_MS = 200 * 24 * 3600 * 1000
-PRODUCTS = ("spot", "coinm")
+# Binance Stocks opened in June 2026; its fills are one stream over all tickers, read in windows too.
+STOCK_EPOCH_MS = 1_777_593_600_000
+STOCK_WINDOW_MS = 200 * 24 * 3600 * 1000
+STOCK_PAGES = 20
+PRODUCTS = ("spot", "coinm", "stock")
 
 
 def utcnow() -> datetime:
@@ -168,6 +172,8 @@ async def refresh(db: AsyncSession, conn: TradeConnectionModel) -> None:
                     select(TradeIncomeModel.symbol).where(TradeIncomeModel.connection_id == conn.id, TradeIncomeModel.product == "coinm", TradeIncomeModel.symbol.is_not(None)).distinct()
                 )
                 await _ensure_syncs(db, conn.id, "coinm", sorted(set(seen)), "income", now)
+        # Stocks (held as EQ_<ticker>, mostly in the funding wallet): one stream over all tickers.
+        await _ensure_syncs(db, conn.id, "stock", [INCOME], "stock", now)
         for t in conn.tracked:
             await _ensure_syncs(db, conn.id, t["product"], [t["symbol"]], "manual", now)
         conn.status = "ok"
@@ -231,8 +237,8 @@ def fill_from(product: str, symbol: str, r: dict) -> TradeFillModel:
     return TradeFillModel(
         product=product,
         symbol=symbol,
-        fill_id=int(r["id"]),
-        order_id=int(r["orderId"]),
+        fill_id=str(r["id"]),
+        order_id=str(r["orderId"]),
         time=ms_to_dt(r["time"]),
         side=side,
         price=dec(r["price"]),
@@ -247,11 +253,72 @@ def fill_from(product: str, symbol: str, r: dict) -> TradeFillModel:
     )
 
 
+def stock_fill_from(r: dict, fee: Decimal) -> TradeFillModel:
+    """A Binance Stocks execution as a row; the fee is this execution's share of its order's fee."""
+    return TradeFillModel(
+        product="stock",
+        symbol=r["symbol"],
+        fill_id=str(r["executionId"]),
+        order_id=str(r["orderId"]),
+        time=ms_to_dt(r["executionAt"]),
+        side=r["side"],
+        price=dec(r["price"]),
+        qty=dec(r["qty"]),
+        quote_qty=dec(r.get("total")),
+        fee=fee,
+        fee_asset=r.get("quote") or "USDC",
+        maker=False,
+        realized_pnl=None,
+        position_side=None,
+        raw=r,
+    )
+
+
+async def _stock_window(client: Binance, start: int, end: int) -> list[TradeFillModel]:
+    """Every stock fill in a window, with the orders' fees shared out by quantity."""
+    rows: list[dict] = []
+    for page in range(1, STOCK_PAGES + 1):
+        chunk, total = await client.stock_trades(start, end, page)
+        rows.extend(chunk)
+        if not chunk or len(rows) >= total:
+            break
+    if not rows:
+        return []
+    orders: dict[str, dict] = {}
+    for page in range(1, STOCK_PAGES + 1):
+        chunk, total = await client.stock_orders(start, end, page)
+        orders.update({str(o["orderId"]): o for o in chunk})
+        if not chunk or len(orders) >= total:
+            break
+    fills = []
+    for r in rows:
+        order = orders.get(str(r["orderId"]))
+        filled = dec(order.get("filledQty")) if order else Decimal(0)
+        fee = (dec(order.get("fee")) * dec(r["qty"]) / filled).quantize(Decimal("1E-18")) if order and filled else Decimal(0)
+        fills.append(stock_fill_from(r, fee))
+    return fills
+
+
 async def sync_page(db: AsyncSession, conn: TradeConnectionModel, sync: TradeSyncModel, client: Binance) -> int:
     """Reads one page for a sync row and moves its cursor; returns how many new rows were stored.
     A short page means the history is in: the next look is in REFRESH, else right away."""
     now = utcnow()
-    if sync.symbol == INCOME:
+    if sync.product == "stock":
+        # One window a call (all its pages); the cursor is the window's start.
+        start = sync.cursor or STOCK_EPOCH_MS
+        now_ms = dt_to_ms(now)
+        end = min(start + STOCK_WINDOW_MS, now_ms)
+        fills = await _stock_window(client, start, end)
+        new = await _store_fills(db, conn.id, fills)
+        if fills:
+            times = [f.time for f in fills]
+            sync.oldest_time = min([sync.oldest_time, *times]) if sync.oldest_time else min(times)
+            sync.newest_time = max([sync.newest_time, *times]) if sync.newest_time else max(times)
+        # The last window is read again from its start next time (fills are deduplicated), so a
+        # fill that lands late is still picked up.
+        sync.cursor = end if end < now_ms else start
+        short = end >= now_ms
+    elif sync.symbol == INCOME:
         start = sync.cursor or COINM_EPOCH_MS
         now_ms = dt_to_ms(now)
         # Up to ten empty windows a page: an account that opened futures recently has years of nothing.
@@ -292,20 +359,25 @@ async def sync_page(db: AsyncSession, conn: TradeConnectionModel, sync: TradeSyn
 async def _store_fills(db: AsyncSession, connection_id: int, fills: list[TradeFillModel]) -> int:
     if not fills:
         return 0
-    product, symbol = fills[0].product, fills[0].symbol
+    # Trade ids are unique within a symbol (spot and futures) or globally (stocks): key on both.
+    product = fills[0].product
     have = set(
-        await db.scalars(
-            select(TradeFillModel.fill_id).where(
-                TradeFillModel.connection_id == connection_id, TradeFillModel.product == product, TradeFillModel.symbol == symbol, TradeFillModel.fill_id.in_([f.fill_id for f in fills])
+        (
+            await db.execute(
+                select(TradeFillModel.symbol, TradeFillModel.fill_id).where(
+                    TradeFillModel.connection_id == connection_id, TradeFillModel.product == product, TradeFillModel.fill_id.in_([f.fill_id for f in fills])
+                )
             )
         )
+        .tuples()
+        .all()
     )
     new = 0
     for f in fills:
-        if f.fill_id not in have:
+        if (f.symbol, f.fill_id) not in have:
             f.connection_id = connection_id
             db.add(f)
-            have.add(f.fill_id)
+            have.add((f.symbol, f.fill_id))
             new += 1
     await db.flush()
     return new
@@ -459,7 +531,8 @@ async def income(db: AsyncSession, connection_id: int, since: datetime | None, u
 
 
 async def reconcile(db: AsyncSession, connection_id: int) -> list[dict]:
-    """What the spot fills add up to per asset against what the spot, funding and earn wallets hold.
+    """What the spot and stock fills add up to per asset against what the spot, funding and earn
+    wallets hold (stocks are held as EQ_<ticker>).
     A difference is a deposit, withdrawal, transfer, earn reward or an untracked symbol — the
     website shows it, nothing is adjusted."""
     computed: dict[str, Decimal] = {}
@@ -468,9 +541,9 @@ async def reconcile(db: AsyncSession, connection_id: int) -> list[dict]:
         if asset:
             computed[asset] = computed.get(asset, Decimal(0)) + amount
 
-    rows = await db.scalars(select(TradeFillModel).where(TradeFillModel.connection_id == connection_id, TradeFillModel.product == "spot"))
+    rows = await db.scalars(select(TradeFillModel).where(TradeFillModel.connection_id == connection_id, TradeFillModel.product.in_(("spot", "stock"))))
     for f in rows:
-        base, quote = _split_spot(f.symbol)
+        base, quote = (f"EQ_{f.symbol}", f.raw.get("quote") or "USDC") if f.product == "stock" else _split_spot(f.symbol)
         sign = 1 if f.side == "BUY" else -1
         bump(base, sign * f.qty)
         bump(quote, -sign * f.quote_qty)

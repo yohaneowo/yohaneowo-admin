@@ -56,9 +56,10 @@ class TradeSyncModel(MappedBase):
     __tablename__ = "bot_trade_sync"
 
     connection_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    # spot, coinm (USDⓈ-M later: usdm)
+    # spot, coinm, stock (US equities; USDⓈ-M later: usdm)
     product: Mapped[str] = mapped_column(String(8), primary_key=True)
-    # The exchange's symbol id (BTCUSDT, BTCUSD_PERP), or "*" for the income stream.
+    # The exchange's symbol id (BTCUSDT, BTCUSD_PERP), or "*" for a stream over all symbols (the
+    # futures income, the stock fills), paged by time.
     symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
     # balance (an asset held), position (open futures), income (seen in futures income), manual
     source: Mapped[str] = mapped_column(String(16), default="balance")
@@ -76,7 +77,9 @@ class TradeSyncModel(MappedBase):
 class TradeFillModel(MappedBase):
     """One fill (a trade of an order; an order can fill in several). Spot: qty in the base asset,
     quote_qty in the quote. COIN-M futures: qty in contracts, quote_qty the coin amount (`baseQty`),
-    realized_pnl in the coin. Quantities are positive; the side gives the direction."""
+    realized_pnl in the coin. Stocks: qty in shares (fractions allowed), quote_qty in the quote
+    (USDC), the fee the order's fee shared out by quantity. Quantities are positive; the side gives
+    the direction."""
 
     __tablename__ = "bot_trade_fill"
     __table_args__ = (Index("ix_bot_trade_fill_time", "connection_id", "product", "symbol", "time"),)
@@ -84,9 +87,9 @@ class TradeFillModel(MappedBase):
     connection_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     product: Mapped[str] = mapped_column(String(8), primary_key=True)
     symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
-    # Binance's trade id, unique within a symbol.
-    fill_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    order_id: Mapped[int] = mapped_column(BigInteger)
+    # The exchange's trade id, unique within a symbol: a number for crypto, a UUID for stocks.
+    fill_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    order_id: Mapped[str] = mapped_column(String(40))
     time: Mapped[datetime] = mapped_column(DateTime)
     # BUY / SELL
     side: Mapped[str] = mapped_column(String(4))

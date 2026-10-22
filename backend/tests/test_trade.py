@@ -14,11 +14,39 @@ MODELS = (TradeConnectionModel, TradeSyncModel, TradeFillModel, TradeBalanceMode
 
 
 def _spot(i, qty, price, buyer=True, fee="0.001", fee_asset="BNB"):
-    return {"id": i, "orderId": 100 + i, "price": price, "qty": qty, "quoteQty": str(Decimal(qty) * Decimal(price)), "commission": fee, "commissionAsset": fee_asset, "time": 1_700_000_000_000 + i * 1000, "isBuyer": buyer, "isMaker": True}
+    return {
+        "id": i,
+        "orderId": 100 + i,
+        "price": price,
+        "qty": qty,
+        "quoteQty": str(Decimal(qty) * Decimal(price)),
+        "commission": fee,
+        "commissionAsset": fee_asset,
+        "time": 1_700_000_000_000 + i * 1000,
+        "isBuyer": buyer,
+        "isMaker": True,
+    }
 
 
 def _coinm(i, side, qty, price, pnl="0"):
-    return {"symbol": "BTCUSD_PERP", "id": i, "orderId": 500 + i, "pair": "BTCUSD", "side": side, "price": price, "qty": qty, "realizedPnl": pnl, "marginAsset": "BTC", "baseQty": "0.01", "commission": "0.00001", "commissionAsset": "BTC", "time": 1_700_000_000_000 + i, "positionSide": "BOTH", "buyer": side == "BUY", "maker": False}
+    return {
+        "symbol": "BTCUSD_PERP",
+        "id": i,
+        "orderId": 500 + i,
+        "pair": "BTCUSD",
+        "side": side,
+        "price": price,
+        "qty": qty,
+        "realizedPnl": pnl,
+        "marginAsset": "BTC",
+        "baseQty": "0.01",
+        "commission": "0.00001",
+        "commissionAsset": "BTC",
+        "time": 1_700_000_000_000 + i,
+        "positionSide": "BOTH",
+        "buyer": side == "BUY",
+        "maker": False,
+    }
 
 
 class FakeClient:
@@ -37,6 +65,15 @@ class FakeClient:
     async def coinm_income(self, start, end):
         self.asked.append(("income", start, end))
         return self.pages[("coinm", "*")].pop(0)
+
+    async def stock_trades(self, start, end, page):
+        self.asked.append(("stock", start, end, page))
+        rows = self.pages[("stock", "trades")]
+        return rows, len(rows)
+
+    async def stock_orders(self, start, end, page):
+        rows = self.pages[("stock", "orders")]
+        return rows, len(rows)
 
 
 def test_a_spot_trade_and_a_futures_trade_become_fills():
@@ -62,7 +99,10 @@ def test_pages_move_the_cursor_and_a_short_page_ends_the_backfill(monkeypatch):
     # The second page repeats the last fill of the first (Binance pages are inclusive of fromId).
     short = [_spot(3, "1", "120"), _spot(4, "0.5", "130", buyer=False)]
     income_full = [{"tranId": i, "incomeType": "FUNDING_FEE", "symbol": "BTCUSD_PERP", "asset": "BTC", "income": "-0.00001", "time": 1_700_000_000_000 + i} for i in range(3)]
-    income_short = [{"tranId": 2, "incomeType": "FUNDING_FEE", "symbol": "BTCUSD_PERP", "asset": "BTC", "income": "-0.00001", "time": 1_700_000_000_002}, {"tranId": 2, "incomeType": "COMMISSION", "symbol": "BTCUSD_PERP", "asset": "BTC", "income": "-0.00002", "time": 1_700_000_000_002}]
+    income_short = [
+        {"tranId": 2, "incomeType": "FUNDING_FEE", "symbol": "BTCUSD_PERP", "asset": "BTC", "income": "-0.00001", "time": 1_700_000_000_002},
+        {"tranId": 2, "incomeType": "COMMISSION", "symbol": "BTCUSD_PERP", "asset": "BTC", "income": "-0.00002", "time": 1_700_000_000_002},
+    ]
     client = FakeClient({("spot", "BTCUSDT"): [full, short], ("coinm", "*"): [income_full, income_short, []]})
 
     async def run():
@@ -85,7 +125,7 @@ def test_pages_move_the_cursor_and_a_short_page_ends_the_backfill(monkeypatch):
             return steps, spot, income_steps, income, fills, incomes, client.asked
 
     steps, spot, income_steps, income, fills, incomes, asked = asyncio.run(run())
-    assert steps == [3, 1] and [f.fill_id for f in fills] == [1, 2, 3, 4]
+    assert steps == [3, 1] and [f.fill_id for f in fills] == ["1", "2", "3", "4"]
     assert spot.cursor == 5 and spot.count == 4 and spot.backfilled is True
     assert spot.next_at == now + service.REFRESH
     assert asked[:2] == [("spot", "BTCUSDT", 0), ("spot", "BTCUSDT", 4)]
@@ -120,3 +160,68 @@ def test_the_ledger_reconciles_against_the_wallets():
     assert rows["ETH"] == {"asset": "ETH", "computed": "1.5", "actual": "1.5", "diff": "0"}
     assert rows["USDT"] == {"asset": "USDT", "computed": "-100.1", "actual": "50", "diff": "150.1"}
     assert rows["BNB"]["computed"] == "-0.001"
+
+
+def test_stock_fills_share_the_fee_of_their_order(monkeypatch):
+    now = datetime(2026, 10, 22, 12, 0)
+    monkeypatch.setattr(service, "utcnow", lambda: now)
+    trades = [
+        {
+            "executionId": "e-1",
+            "orderId": "o-1",
+            "symbol": "MSTR",
+            "quote": "USDC",
+            "side": "BUY",
+            "orderType": "MARKET",
+            "price": "150",
+            "qty": "0.25",
+            "total": "37.5",
+            "executionAt": 1_780_000_000_000,
+        },
+        {
+            "executionId": "e-2",
+            "orderId": "o-1",
+            "symbol": "MSTR",
+            "quote": "USDC",
+            "side": "BUY",
+            "orderType": "MARKET",
+            "price": "152",
+            "qty": "0.75",
+            "total": "114",
+            "executionAt": 1_780_000_001_000,
+        },
+    ]
+    orders = [{"orderId": "o-1", "symbol": "MSTR", "quote": "USDC", "side": "BUY", "status": "FILLED", "qty": "1", "filledQty": "1", "fee": "0.4"}]
+    client = FakeClient({("stock", "trades"): trades, ("stock", "orders"): orders})
+
+    async def run():
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            for model in MODELS:
+                await conn.run_sync(model.__table__.create)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as db, db.begin():
+            conn = TradeConnectionModel(id=1, site_user_id="u", exchange="binance", label="b", api_key="", api_secret="", key_tail="abcd", permissions={}, tracked=[])
+            db.add(conn)
+            stock = TradeSyncModel(connection_id=1, product="stock", symbol="*", source="stock", next_at=now)
+            db.add(stock)
+            await db.flush()
+            new = await service.sync_page(db, conn, stock, client)
+            again = await service.sync_page(db, conn, stock, client)
+            fills = list(await db.scalars(select(TradeFillModel).order_by(TradeFillModel.time)))
+            db.add(TradeBalanceModel(connection_id=1, wallet="funding", asset="EQ_MSTR", free=Decimal("1"), locked=Decimal(0), total=Decimal("1")))
+            await db.flush()
+            return new, again, stock, fills, await service.reconcile(db, 1), client.asked
+
+    new, again, stock, fills, rows, asked = asyncio.run(run())
+    # The fee is shared by quantity; the second pass finds nothing new, and the window reaches now.
+    assert (new, again) == (2, 0)
+    # SQLite keeps NUMERIC as floats, so the fees are compared rounded.
+    assert [(f.symbol, f.qty, f.fee.quantize(Decimal("0.000001")), f.fee_asset) for f in fills] == [
+        ("MSTR", Decimal("0.25"), Decimal("0.1"), "USDC"),
+        ("MSTR", Decimal("0.75"), Decimal("0.3"), "USDC"),
+    ]
+    assert stock.backfilled is True and stock.next_at == now + service.REFRESH
+    assert asked[0][1] == service.STOCK_EPOCH_MS
+    by_asset = {r["asset"]: r for r in rows}
+    assert by_asset["EQ_MSTR"]["diff"] == "0" and Decimal(by_asset["USDC"]["computed"]).quantize(Decimal("0.0001")) == Decimal("-151.9")
