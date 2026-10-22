@@ -476,6 +476,8 @@ async def positions(db: AsyncSession, connection_id: int) -> list[dict]:
             "markPrice": num(p.mark_price),
             "unrealizedPnl": num(p.unrealized_pnl),
             "liquidationPrice": num(p.liquidation_price),
+            # The price the position breaks even at, fees included (Binance reports it).
+            "breakEvenPrice": num(dec(p.raw.get("breakEvenPrice"))) if p.raw.get("breakEvenPrice") else None,
             "leverage": p.leverage,
             "marginType": p.margin_type,
             "updatedAt": dt_to_ms(p.updated_at),
