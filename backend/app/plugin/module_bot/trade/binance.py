@@ -101,13 +101,6 @@ class Binance:
             out.append({"asset": a["asset"], "free": free, "locked": max(total - free, Decimal(0)), "total": total, "unrealized": dec(a.get("unrealizedProfit"))})
         return out
 
-    async def tokenized_assets(self) -> dict[str, str]:
-        """Binance's tokenized stocks (bStocks, traded on spot as e.g. MSTRBUSDT) by the US ticker
-        they track: {"MSTRB": "MSTR", …} (GET /sapi/v1/equity/market/tokenized-assets)."""
-        r = await self._call(self.spot.sapi_get_equity_market_tokenized_assets, {})
-        rows = r.get("rows", r) if isinstance(r, dict) else r
-        return {row["assetCode"]: row["underlyingEquitySymbol"] for row in rows or [] if row.get("assetCode") and row.get("underlyingEquitySymbol")}
-
     async def coinm_positions(self) -> list[dict]:
         r = await self._call(self.coinm.dapiprivate_get_positionrisk)
         return [p for p in r if dec(p.get("positionAmt"))]

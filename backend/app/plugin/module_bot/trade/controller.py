@@ -76,13 +76,6 @@ async def get_ip():
     return SuccessResponse(data={"ip": _ip[0]})
 
 
-@TradeWebsiteRouter.get("/tokenized")
-async def get_tokenized():
-    """Binance's tokenized stocks by the ticker they track ({"MSTRB": "MSTR"}); empty until a
-    connection has refreshed since this process started."""
-    return SuccessResponse(data=service.tokenized())
-
-
 @TradeWebsiteRouter.get("/users/{site_user_id}/connections")
 async def get_connections(site_user_id: SiteUserId, db: Db):
     rows = await service.connections(db, site_user_id)
