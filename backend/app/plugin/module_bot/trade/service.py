@@ -139,6 +139,26 @@ async def set_tracked(db: AsyncSession, conn: TradeConnectionModel, add: list[di
 # ── The refresh: balances, positions, which symbols to read ──────────────────────────────────
 
 
+# Binance's tokenized stocks by the ticker they track, read once a day with whichever key refreshes
+# first (market data, the same for everyone): the website puts a stock's fills on its bStock chart.
+TOKENIZED_TTL = timedelta(days=1)
+_tokenized: dict = {"at": None, "map": {}}
+
+
+def tokenized() -> dict[str, str]:
+    return _tokenized["map"]
+
+
+async def _refresh_tokenized(client: Binance, now: datetime) -> None:
+    if _tokenized["at"] and now - _tokenized["at"] < TOKENIZED_TTL:
+        return
+    try:
+        _tokenized["map"] = await client.tokenized_assets()
+        _tokenized["at"] = now
+    except Exception:  # noqa: BLE001 - a market-data nicety; the next refresh tries again
+        pass
+
+
 async def refresh(db: AsyncSession, conn: TradeConnectionModel) -> None:
     """Replaces the balances and positions, and makes sure every symbol worth reading has a sync row."""
     client = client_for(conn)
@@ -174,6 +194,7 @@ async def refresh(db: AsyncSession, conn: TradeConnectionModel) -> None:
                 await _ensure_syncs(db, conn.id, "coinm", sorted(set(seen)), "income", now)
         # Stocks (held as EQ_<ticker>, mostly in the funding wallet): one stream over all tickers.
         await _ensure_syncs(db, conn.id, "stock", [INCOME], "stock", now)
+        await _refresh_tokenized(client, now)
         for t in conn.tracked:
             await _ensure_syncs(db, conn.id, t["product"], [t["symbol"]], "manual", now)
         conn.status = "ok"
