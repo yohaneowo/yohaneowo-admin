@@ -8,6 +8,7 @@ aiofiles==24.1.0                       # 异步文件操作
 alembic==1.18.4                        # 数据库迁移
 apscheduler==3.11.0                    # 定时任务
 bleach==6.4.0                          # HTML 过滤
+ccxt==4.5.89                           # 交易所 API（TradeHub：签名、限流、原始端点）
 click==8.1.7                           # 命令行参数解析（typer 依赖）
 croniter==6.2.4                        # cron 表达式校验
 fastapi==0.138.2                       # Web 框架
