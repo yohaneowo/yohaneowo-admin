@@ -68,6 +68,8 @@ async def connect(db: AsyncSession, site_user_id: str, label: str, api_key: str,
         if not permissions["reading"]:
             raise KeyRejected("reading")
         await client.spot_balances()
+        # The bStock list right away, so the first charts after connecting already have it.
+        await _refresh_tokenized(client, utcnow())
     finally:
         await client.close()
     row = TradeConnectionModel(
