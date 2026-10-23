@@ -4,6 +4,7 @@ back, with Bybit's page cursor inside a window. No symbol list to maintain, so n
 by hand."""
 
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +19,20 @@ PRODUCT_CATEGORY = {product: category for category, product in CATEGORIES.items(
 OVERLAP_MS = 60_000
 # Empty windows skipped in one call (two years of a product never traded is 104 of them).
 EMPTY_WINDOWS = 10
+# The asset overview's account types → wallets. The unified and funding accounts are read in
+# detail from their own endpoints; everything else lands in three wallets.
+OVERVIEW_WALLETS = {
+    "Earn": "earn",
+    "TradingBot": "bot",
+    "CopyTrading": "other",
+    "Launchpool": "other",
+    "CryptoLoans": "other",
+    "CryptoLoans_legacy": "other",
+    "PayLater": "other",
+    "TradFi": "other",
+    "MarginStakedSOL": "other",
+    "Alpha": "other",
+}
 
 
 async def check(client: Bybit) -> dict:
@@ -42,7 +57,18 @@ async def refresh(db: AsyncSession, conn: TradeConnectionModel, client: Bybit, n
     priced = lambda rows: [{**b, "price_usd": b.get("price_usd") or prices.get(b["asset"])} for b in rows]  # noqa: E731
     await store.replace_balances(db, conn.id, "unified", priced(await client.unified_balances()), now)
     await store.replace_balances(db, conn.id, "funding", priced(await client.fund_balances()), now)
-    await store.replace_balances(db, conn.id, "earn", priced(await client.earn_balances()), now)
+    # The asset overview is where the rest lives: Earn (every product, not only the flexible and
+    # on-chain ones the position endpoint knows), the trading bots (grids, kept in their own
+    # account), copy trading, Launchpool, loans… Unified and funding were read above in detail.
+    wallets: dict[str, dict[str, Decimal]] = {"earn": {}, "bot": {}, "other": {}}
+    for account in await client.overview():
+        wallet = OVERVIEW_WALLETS.get(account["accountType"])
+        if wallet is None:
+            continue
+        for coin, amount in account["coins"].items():
+            wallets[wallet][coin] = wallets[wallet].get(coin, Decimal(0)) + amount
+    for wallet, coins in wallets.items():
+        await store.replace_balances(db, conn.id, wallet, priced([{"asset": coin, "free": Decimal(0), "locked": amount} for coin, amount in coins.items()]), now)
     positions = await client.positions()
     for product in ("usdm", "coinm"):
         await store.replace_positions(db, conn.id, product, [position_from(p) for p in positions if p["_product"] == product], now)

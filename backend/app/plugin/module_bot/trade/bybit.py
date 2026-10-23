@@ -81,6 +81,25 @@ class Bybit:
             out.append({"asset": c["coin"], "free": free, "locked": max(total - free, dec(0))})
         return out
 
+    async def overview(self) -> list[dict]:
+        """Every account's equity per coin (GET /v5/asset/asset-overview): [{accountType,
+        totalEquity (USD), coins: {coin: equity}}]. The only place the trading bots (grids), copy
+        trading, Launchpool and the like show up; the unified and funding accounts are read in
+        more detail elsewhere."""
+        r = (await self._call(self.api.private_get_v5_asset_asset_overview, {}))["result"]
+        out = []
+        for a in r.get("list", []):
+            coins: dict[str, Decimal] = {}
+            details = list(a.get("coinDetail") or [])
+            for category in a.get("categories") or []:
+                details.extend(category.get("coinDetail") or [])
+            for c in details:
+                amount = dec(c.get("equity"))
+                if amount:
+                    coins[c["coin"]] = coins.get(c["coin"], Decimal(0)) + amount
+            out.append({"accountType": a.get("accountType") or "", "totalEquity": dec(a.get("totalEquity")), "coins": coins})
+        return out
+
     async def earn_balances(self) -> list[dict]:
         """Earn positions (flexible savings, on-chain staking) summed per coin, all locked."""
         totals: dict = {}
