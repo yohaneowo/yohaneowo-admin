@@ -2,13 +2,14 @@
 paces them, while the raw JSON keeps Binance's decimal strings (ccxt's unified methods would parse
 them to floats). Spot (api/sapi) and COIN-M futures (dapi) are two clients on the same key."""
 
-import logging
 from decimal import Decimal
 
 import ccxt.async_support as ccxt
 from ccxt.base.errors import AuthenticationError, DDoSProtection, PermissionDenied, RateLimitExceeded
 
-from ..movie.sources.base import SourceUnavailable
+from .common import KeyRejected, SourceUnavailable, dec
+
+__all__ = ["PAGE", "QUOTES", "STABLES", "Binance", "KeyRejected", "dec"]
 
 PAGE = 1000
 # Quote assets a held asset is paired with when looking for its spot market, in order.
@@ -19,19 +20,6 @@ STABLES = {"USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI", "USDP", "USD1", "EUR"
 STOCK_PREFIX = "EQ_"
 # The stock endpoints page with `page` / `size`; a size above 100 is rejected.
 STOCK_PAGE = 100
-
-
-# ccxt logs every request and response body at DEBUG: account balances and signed URLs don't belong
-# in the log files.
-logging.getLogger("ccxt").setLevel(logging.WARNING)
-
-
-class KeyRejected(Exception):
-    """The key is invalid or lacks a permission; the connection should stop trying for a while."""
-
-
-def dec(value) -> Decimal:
-    return Decimal(str(value if value not in (None, "") else "0"))
 
 
 class Binance:

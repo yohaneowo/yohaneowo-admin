@@ -1,8 +1,9 @@
 """The TradeHub loop: every TICK seconds, refresh the connections that are due (balances, positions,
 which symbols to read) and read a few pages of fills. Started by the first TradeHub request, like the
 movie and DotaHub loops; with several workers each runs a loop and SKIP LOCKED keeps one reader per
-row. All connections share this host's request budget at Binance (weight 6,000 a minute per IP; a
-page of fills is 20), so the pages a tick are capped."""
+row. All connections share this host's request budget at each exchange (Binance: weight 6,000 a
+minute per IP, a page of fills is 20; Pionex: 10 requests a second per IP), so the pages a tick are
+capped."""
 
 import asyncio
 from itertools import groupby
@@ -12,9 +13,8 @@ from sqlalchemy import or_, select
 from app.core.database import async_db_session
 from app.core.logger import logger
 
-from ..movie.sources.base import SourceUnavailable
 from . import service
-from .binance import KeyRejected
+from .common import KeyRejected, SourceUnavailable
 from .model import TradeConnectionModel, TradeSyncModel
 
 TICK = 30

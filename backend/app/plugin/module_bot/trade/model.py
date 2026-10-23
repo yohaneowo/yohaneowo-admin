@@ -27,7 +27,7 @@ class TradeConnectionModel(MappedBase):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     site_user_id: Mapped[str] = mapped_column(String(64), index=True)
-    # binance (bybit, okx, pionex later)
+    # binance, bybit, pionex (common.EXCHANGES)
     exchange: Mapped[str] = mapped_column(String(16))
     label: Mapped[str] = mapped_column(String(64))
     api_key: Mapped[str] = mapped_column(Text)
@@ -56,14 +56,19 @@ class TradeSyncModel(MappedBase):
     __tablename__ = "bot_trade_sync"
 
     connection_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    # spot, coinm, stock (US equities; USDⓈ-M later: usdm)
+    # spot, coinm (coin-margined contracts), usdm (USDⓈ-margined contracts), stock (US equities)
     product: Mapped[str] = mapped_column(String(8), primary_key=True)
-    # The exchange's symbol id (BTCUSDT, BTCUSD_PERP), or "*" for a stream over all symbols (the
-    # futures income, the stock fills), paged by time.
+    # The exchange's symbol id (BTCUSDT, BTCUSD_PERP, BTC_USDT), or "*" for a stream over all
+    # symbols (Binance's futures income and stock fills, Bybit's fills of a category), paged by time.
     symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
-    # balance (an asset held), position (open futures), income (seen in futures income), manual
+    # balance (an asset held), position (open futures), income (seen in futures income), manual,
+    # stock, stream (a whole-category stream)
     source: Mapped[str] = mapped_column(String(16), default="balance")
+    # Binance: the next trade id. Time-paged streams: a millisecond timestamp (Pionex symbols page
+    # backwards in time until backfilled, then forwards; see flow_pionex.py).
     cursor: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Bybit: the page cursor inside the current window.
+    page_cursor: Mapped[str | None] = mapped_column(String(200), nullable=True)
     count: Mapped[int] = mapped_column(Integer, default=0)
     oldest_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     newest_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -141,6 +146,53 @@ class TradePositionModel(MappedBase):
     leverage: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # cross / isolated
     margin_type: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    raw: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class TradeBotModel(MappedBase):
+    """A trading bot (Pionex: futures grid, hedge grid, spot grid, smart copy) as the exchange
+    reports it — its investment, position and profit so far. Running bots are replaced on every
+    refresh; finished ones stay as history. Amounts are in the bot's quote (USDT mostly)."""
+
+    __tablename__ = "bot_trade_bot"
+
+    connection_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    bot_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    # futures_grid, future_hedge_grid, spot_grid, smart_copy
+    type: Mapped[str] = mapped_column(String(24))
+    name: Mapped[str] = mapped_column(String(64), default="")
+    # The symbol the bot trades, in the exchange's format (BTC_USDT_PERP, BTC_USDT).
+    symbol: Mapped[str] = mapped_column(String(32))
+    base: Mapped[str] = mapped_column(String(16))
+    quote: Mapped[str] = mapped_column(String(16))
+    # running, finished
+    status: Mapped[str] = mapped_column(String(16))
+    # The bot's own state (running, paused, canceled…) and why it closed.
+    state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # long / short / neutral for futures grids.
+    side: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    leverage: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # What was put in (quote), the margin balance now, the open position (base units) and its
+    # average price.
+    investment: Mapped[Decimal | None] = mapped_column(Amount, nullable=True)
+    margin: Mapped[Decimal | None] = mapped_column(Amount, nullable=True)
+    qty: Mapped[Decimal | None] = mapped_column(Amount, nullable=True)
+    entry_price: Mapped[Decimal | None] = mapped_column(Amount, nullable=True)
+    # Profit so far: from grid arbitrage, all realized (position changes included), fees and
+    # funding paid (negative).
+    grid_profit: Mapped[Decimal | None] = mapped_column(Amount, nullable=True)
+    realized_pnl: Mapped[Decimal | None] = mapped_column(Amount, nullable=True)
+    fee: Mapped[Decimal | None] = mapped_column(Amount, nullable=True)
+    funding: Mapped[Decimal | None] = mapped_column(Amount, nullable=True)
+    # Completed grid round trips.
+    pairs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    top: Mapped[Decimal | None] = mapped_column(Amount, nullable=True)
+    bottom: Mapped[Decimal | None] = mapped_column(Amount, nullable=True)
+    rows: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    liquidation_price: Mapped[Decimal | None] = mapped_column(Amount, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
 

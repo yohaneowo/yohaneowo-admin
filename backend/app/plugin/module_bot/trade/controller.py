@@ -16,20 +16,24 @@ from app.core.dependencies import db_getter
 from ..movie.auth import verify_site_token
 from ..movie.schema import SiteUserId
 from . import job, service
-from .binance import KeyRejected
+from .common import KeyRejected
 
 Db = Annotated[AsyncSession, Depends(db_getter)]
 Symbol = Annotated[str, Field(pattern=r"^[A-Z0-9_]{1,32}$")]
-Product = Literal["spot", "coinm", "stock"]
-# Symbols followed by hand: only the products read symbol by symbol (stock fills come as one stream).
-TrackedProduct = Literal["spot", "coinm"]
+Exchange = Literal["binance", "bybit", "pionex"]
+Product = Literal["spot", "coinm", "usdm", "stock"]
+# Symbols followed by hand: only the products read symbol by symbol (stock fills and Bybit's fills
+# come as streams).
+TrackedProduct = Literal["spot", "coinm", "usdm"]
+# A key's reason for refusal → the website's error code.
+REFUSALS = {"withdrawals": "keyWithdrawals", "reading": "keyReading", "classic": "keyClassic", "unknownSymbol": "unknownSymbol"}
 
 TradeWebsiteRouter = APIRouter(prefix="/website/trade", tags=["网站 TradeHub"], dependencies=[Depends(verify_site_token), Depends(job.ensure_loop)])
 
 
 class ConnectIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    exchange: Literal["binance"] = "binance"
+    exchange: Exchange = "binance"
     label: str = Field(default="", max_length=64)
     apiKey: str = Field(min_length=16, max_length=512, pattern=r"^[A-Za-z0-9+/=_\-]+$")
     apiSecret: str = Field(min_length=16, max_length=4096)
@@ -85,14 +89,14 @@ async def get_connections(site_user_id: SiteUserId, db: Db):
 @TradeWebsiteRouter.post("/users/{site_user_id}/connections")
 async def post_connection(site_user_id: SiteUserId, data: ConnectIn, db: Db):
     """Checks the key with the exchange and starts reading. Refused when it can withdraw
-    (keyWithdrawals), can't read (keyReading) or doesn't work (keyInvalid)."""
+    (keyWithdrawals), can't read (keyReading), is a Bybit account that isn't unified (keyClassic)
+    or doesn't work (keyInvalid)."""
     if len(await service.connections(db, site_user_id)) >= 5:
         raise HTTPException(400, "tooMany")
     try:
-        conn = await service.connect(db, site_user_id, data.label, data.apiKey, data.apiSecret)
+        conn = await service.connect(db, site_user_id, data.exchange, data.label, data.apiKey, data.apiSecret)
     except KeyRejected as error:
-        reason = str(error)
-        raise HTTPException(400, "keyWithdrawals" if reason == "withdrawals" else "keyReading" if reason == "reading" else "keyInvalid") from error
+        raise HTTPException(400, REFUSALS.get(str(error), "keyInvalid")) from error
     return SuccessResponse(data=service.connection_out(conn, []))
 
 
@@ -124,14 +128,15 @@ async def put_tracked(site_user_id: SiteUserId, connection_id: int, data: Tracke
     try:
         await service.set_tracked(db, conn, [t.model_dump() for t in data.add], [t.model_dump() for t in data.remove])
     except KeyRejected as error:
-        raise HTTPException(400, "unknownSymbol" if str(error) == "unknownSymbol" else "keyInvalid") from error
+        raise HTTPException(400, REFUSALS.get(str(error), "keyInvalid")) from error
     return SuccessResponse(data=service.connection_out(conn, await service.syncs(db, conn.id)))
 
 
 @TradeWebsiteRouter.get("/users/{site_user_id}/connections/{connection_id}/balances")
 async def get_balances(site_user_id: SiteUserId, connection_id: int, db: Db):
+    """The wallets, the open contract positions and the trading bots (Pionex)."""
     conn = await _connection(db, site_user_id, connection_id)
-    return SuccessResponse(data={"balances": await service.balances(db, conn.id), "positions": await service.positions(db, conn.id)})
+    return SuccessResponse(data={"balances": await service.balances(db, conn.id), "positions": await service.positions(db, conn.id), "bots": await service.bots(db, conn.id)})
 
 
 @TradeWebsiteRouter.get("/users/{site_user_id}/connections/{connection_id}/fills")
