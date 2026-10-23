@@ -55,8 +55,9 @@ async def refresh(db: AsyncSession, conn: TradeConnectionModel, client: Pionex, 
 
 def _bot_account(overview: dict) -> tuple[list[dict], list[dict]]:
     """The bot account of GET /api/v1/wallet/balancesFull as balances: the bots summed per
-    investment coin (what was put in plus the profit so far, the profit as "unrealized"), the spot
-    coins parked in the bot account, and the earn products as a wallet of their own."""
+    investment coin (what each is worth now: what was put in plus the profit so far — the profit
+    itself is on the bot rows, not repeated as "unrealized", which the website adds to the total),
+    the spot coins parked in the bot account, and the earn products as a wallet of their own."""
     bots: dict[str, dict] = {}
     coins: dict[str, dict] = {}
     earn: dict[str, Decimal] = {}
@@ -65,11 +66,10 @@ def _bot_account(overview: dict) -> tuple[list[dict], list[dict]]:
         for item in detail.get("list") or []:
             if kind == "trading_bot":
                 asset = item.get("investmentToken") or "USDT"
-                invested, profit = dec(item.get("investmentAmount")), dec(item.get("profit"))
-                row = bots.setdefault(asset, {"asset": asset, "free": Decimal(0), "locked": Decimal(0), "total": Decimal(0), "unrealized": Decimal(0), "bot": True})
-                row["locked"] += invested + profit
-                row["total"] += invested + profit
-                row["unrealized"] += profit
+                worth = dec(item.get("investmentAmount")) + dec(item.get("profit"))
+                row = bots.setdefault(asset, {"asset": asset, "free": Decimal(0), "locked": Decimal(0), "total": Decimal(0), "bot": True})
+                row["locked"] += worth
+                row["total"] += worth
             elif kind == "spot":
                 asset = item.get("coin")
                 free = dec(item.get("free"))
@@ -147,7 +147,8 @@ def bot_from(o: dict, status: str) -> TradeBotModel:
         state=(d.get("status") or o.get("status") or None),
         side=(trend if trend in ("long", "short", "neutral") else None),
         leverage=int(dec(d["leverage"])) if d.get("leverage") else None,
-        investment=_first(d, "quoteInvestment", "initQuoteInvestment", "usdtInvestment"),
+        # A futures grid's investment is the grid's own plus the extra margin, both in the quote.
+        investment=_sum(d, "quoteInvestment", "extraMargin") or _first(d, "initQuoteInvestment", "usdtInvestment"),
         margin=_first(d, "marginBalance"),
         qty=_first(d, "position", "baseAmount"),
         entry_price=_first(d, "positionOpenPrice", "averageCost"),
@@ -171,6 +172,12 @@ def _first(d: dict, *keys: str) -> Decimal | None:
         if d.get(key) not in (None, ""):
             return dec(d[key])
     return None
+
+
+def _sum(d: dict, *keys: str) -> Decimal | None:
+    """The sum of the keys that are present; None when none is."""
+    values = [dec(d[key]) for key in keys if d.get(key) not in (None, "")]
+    return sum(values, Decimal(0)) if values else None
 
 
 # ── Fills, a page a time ─────────────────────────────────────────────────────────────────────

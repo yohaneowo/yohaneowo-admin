@@ -230,6 +230,8 @@ async def bots(db: AsyncSession, connection_id: int) -> list[dict]:
             "top": num(b.top),
             "bottom": num(b.bottom),
             "rows": b.rows,
+            # arithmetic / geometric: how the grid levels are spaced (the website draws them).
+            "gridType": (b.raw.get("data") or {}).get("gridType") or None,
             "liquidationPrice": num(b.liquidation_price),
             "createdAt": dt_to_ms(b.created_at),
             "closedAt": dt_to_ms(b.closed_at),
