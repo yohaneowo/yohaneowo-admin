@@ -19,11 +19,23 @@ STREAM = "*"
 
 
 async def replace_balances(db: AsyncSession, connection_id: int, wallet: str, rows: list[dict], now: datetime) -> None:
-    """Rows are {asset, free, locked, total?, unrealized?}."""
+    """Rows are {asset, free, locked, total?, unrealized?, price_usd?}."""
     await db.execute(delete(TradeBalanceModel).where(TradeBalanceModel.connection_id == connection_id, TradeBalanceModel.wallet == wallet))
     for b in rows:
         total = b.get("total", b["free"] + b["locked"])
-        db.add(TradeBalanceModel(connection_id=connection_id, wallet=wallet, asset=b["asset"], free=b["free"], locked=b["locked"], total=total, unrealized=b.get("unrealized"), updated_at=now))
+        db.add(
+            TradeBalanceModel(
+                connection_id=connection_id,
+                wallet=wallet,
+                asset=b["asset"],
+                free=b["free"],
+                locked=b["locked"],
+                total=total,
+                unrealized=b.get("unrealized"),
+                price_usd=b.get("price_usd"),
+                updated_at=now,
+            )
+        )
 
 
 async def replace_positions(db: AsyncSession, connection_id: int, product: str, rows: list[dict], now: datetime) -> None:

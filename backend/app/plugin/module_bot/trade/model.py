@@ -124,6 +124,9 @@ class TradeBalanceModel(MappedBase):
     total: Mapped[Decimal] = mapped_column(Amount)
     # Futures wallets: the unrealized profit in the asset (the total is the wallet balance).
     unrealized: Mapped[Decimal | None] = mapped_column(Amount, nullable=True)
+    # The asset's USD price as the exchange reported it at the refresh (Bybit, Pionex), so coins
+    # Binance doesn't list are still valued; the website falls back to Binance's price when null.
+    price_usd: Mapped[Decimal | None] = mapped_column(Amount, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 

@@ -3,6 +3,8 @@ wallet is one UNIFIED account (spot, USDⓈ-M and inverse contracts share it), t
 Earn are separate. Fills come as one stream per product category (no symbol needed), 7-day windows,
 2 years back."""
 
+from decimal import Decimal
+
 import ccxt.async_support as ccxt
 from ccxt.base.errors import AuthenticationError, DDoSProtection, PermissionDenied, RateLimitExceeded
 
@@ -41,9 +43,20 @@ class Bybit:
 
     # ── Balances ──────────────────────────────────────────────────────────────────────────────
 
+    async def prices(self) -> dict[str, Decimal]:
+        """Every coin's USDT price from the spot tickers (public), USDT itself at 1."""
+        r = (await self._call(self.api.public_get_v5_market_tickers, {"category": "spot"}))["result"]
+        out = {"USDT": Decimal(1)}
+        for t in r.get("list", []):
+            symbol = t.get("symbol") or ""
+            if symbol.endswith("USDT") and t.get("lastPrice"):
+                out.setdefault(symbol[:-4], dec(t["lastPrice"]))
+        return out
+
     async def unified_balances(self) -> list[dict]:
-        """[{asset, free, locked, total, unrealized}] of the unified account, non-zero only; the
-        total is the wallet balance, the unrealized profit of its contracts beside it."""
+        """[{asset, free, locked, total, unrealized, price_usd}] of the unified account, non-zero
+        only; the total is the wallet balance, the unrealized profit of its contracts beside it, the
+        price what Bybit values the coin at."""
         r = (await self._call(self.api.private_get_v5_account_wallet_balance, {"accountType": "UNIFIED"}))["result"]
         out = []
         for account in r.get("list", []):
@@ -52,7 +65,9 @@ class Bybit:
                 if not total and not unrealized:
                     continue
                 locked = dec(c.get("locked"))
-                out.append({"asset": c["coin"], "free": max(total - locked, dec(0)), "locked": locked, "total": total, "unrealized": unrealized})
+                usd = dec(c.get("usdValue"))
+                price = (usd / total) if total and usd else None
+                out.append({"asset": c["coin"], "free": max(total - locked, dec(0)), "locked": locked, "total": total, "unrealized": unrealized, "price_usd": price})
         return out
 
     async def fund_balances(self) -> list[dict]:

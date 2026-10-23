@@ -175,7 +175,17 @@ def connection_out(conn: TradeConnectionModel, rows: list[TradeSyncModel]) -> di
 async def balances(db: AsyncSession, connection_id: int) -> list[dict]:
     rows = await db.scalars(select(TradeBalanceModel).where(TradeBalanceModel.connection_id == connection_id).order_by(TradeBalanceModel.wallet, TradeBalanceModel.asset))
     return [
-        {"wallet": b.wallet, "asset": b.asset, "free": num(b.free), "locked": num(b.locked), "total": num(b.total), "unrealized": num(b.unrealized), "updatedAt": dt_to_ms(b.updated_at)} for b in rows
+        {
+            "wallet": b.wallet,
+            "asset": b.asset,
+            "free": num(b.free),
+            "locked": num(b.locked),
+            "total": num(b.total),
+            "unrealized": num(b.unrealized),
+            "priceUsd": num(b.price_usd),
+            "updatedAt": dt_to_ms(b.updated_at),
+        }
+        for b in rows
     ]
 
 

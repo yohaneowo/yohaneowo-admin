@@ -34,13 +34,17 @@ async def validate_tracked(client: Pionex, product: str, symbol: str) -> bool:
 
 
 async def refresh(db: AsyncSession, conn: TradeConnectionModel, client: Pionex, now: datetime) -> None:
-    spot = await client.spot_balances()
-    await store.replace_balances(db, conn.id, "spot", spot, now)
     overview = await client.overview()
+    # The overview carries Pionex's USD price of every coin held, for coins Binance doesn't list.
+    prices = {coin: dec(p.get("priceInUsd")) for coin, p in (overview.get("prices") or {}).items() if isinstance(p, dict) and p.get("priceInUsd")}
+    prices.setdefault("USDT", dec(1))
+    priced = lambda rows: [{**b, "price_usd": prices.get(b["asset"])} for b in rows]  # noqa: E731
+    spot = await client.spot_balances()
+    await store.replace_balances(db, conn.id, "spot", priced(spot), now)
     bot_wallet, earn = _bot_account(overview)
-    await store.replace_balances(db, conn.id, "bot", bot_wallet, now)
-    await store.replace_balances(db, conn.id, "earn", earn, now)
-    await store.replace_balances(db, conn.id, "usdm", await client.usdm_balances(), now)
+    await store.replace_balances(db, conn.id, "bot", priced(bot_wallet), now)
+    await store.replace_balances(db, conn.id, "earn", priced(earn), now)
+    await store.replace_balances(db, conn.id, "usdm", priced(await client.usdm_balances()), now)
     positions = await client.usdm_positions()
     await store.replace_positions(db, conn.id, "usdm", [position_from(p) for p in positions], now)
     if conn.permissions.get("botReading", True):

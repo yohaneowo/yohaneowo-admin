@@ -36,9 +36,13 @@ async def validate_tracked(client: Bybit, product: str, symbol: str) -> bool:
 
 
 async def refresh(db: AsyncSession, conn: TradeConnectionModel, client: Bybit, now: datetime) -> None:
-    await store.replace_balances(db, conn.id, "unified", await client.unified_balances(), now)
-    await store.replace_balances(db, conn.id, "funding", await client.fund_balances(), now)
-    await store.replace_balances(db, conn.id, "earn", await client.earn_balances(), now)
+    # Bybit's own prices value every coin it lists (Binance, which the website prices with
+    # otherwise, lacks many of the small ones); the unified rows carry Bybit's own valuation.
+    prices = await client.prices()
+    priced = lambda rows: [{**b, "price_usd": b.get("price_usd") or prices.get(b["asset"])} for b in rows]  # noqa: E731
+    await store.replace_balances(db, conn.id, "unified", priced(await client.unified_balances()), now)
+    await store.replace_balances(db, conn.id, "funding", priced(await client.fund_balances()), now)
+    await store.replace_balances(db, conn.id, "earn", priced(await client.earn_balances()), now)
     positions = await client.positions()
     for product in ("usdm", "coinm"):
         await store.replace_positions(db, conn.id, product, [position_from(p) for p in positions if p["_product"] == product], now)
